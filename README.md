@@ -1,3 +1,3 @@
-# 2DEMCmodel
+# Cardio2D
 
-2D EMC model project.
+Cardio 2D model project.
