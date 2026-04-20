@@ -1,3 +1,3 @@
-# OpenCode_test
+# 2DEMCmodel
 
-Project description goes here.
+2D EMC model project.
