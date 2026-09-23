@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cardiac-em"
+version = "0.1.0.dev0"
+description = "Электромеханика сердечной ткани: монодоменная электрика + квазистатическая гиперупругость на раздельных сетках (DOLFINx)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "А. Г. Курсанов" },
+]
+keywords = [
+    "cardiac electrophysiology",
+    "electromechanics",
+    "monodomain",
+    "hyperelasticity",
+    "finite elements",
+    "dolfinx",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Intended Audience :: Science/Research",
+]
+
+# ВАЖНО: DOLFINx, PETSc4py и MPI4py СОЗНАТЕЛЬНО не указаны в зависимостях.
+# Они не ставятся через pip в рабочем виде — приходят из conda/spack/докер-
+# образа вместе с собранными PETSc и MPI. Если вписать их сюда, `pip install
+# -e .` попытается их пересобрать и сломает окружение.
+#
+# Здесь только то, что pip ставит безопасно и что нужно слою config/
+# (он обязан работать в окружении БЕЗ DOLFINx).
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# Нужно расчётной части сверх numpy (перенос полей между сетками).
+solver = [
+    "scipy>=1.10",
+]
+# Постобработка: читает файлы результатов, DOLFINx не требует.
+analysis = [
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+# Появится на шаге 10 вместе с control/cli.py
+# cardiac-em = "cardiac_em.control.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["cardiac_em*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+# Тесты, требующие DOLFINx, помечаются @pytest.mark.fem и пропускаются
+# автоматически там, где его нет (например, на ноутбуке).
+markers = [
+    "fem: требует установленного DOLFINx (пропускается без него)",
+    "mpi: осмысленен только при запуске под mpirun",
+    "slow: длинный тест, не для каждого прогона",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # длину строки контролируем line-length, без жёсткого запрета
+]
+
+[tool.ruff.lint.per-file-ignores]
+# В тестах допустимы длинные литералы и отступления от импортного порядка
+"tests/*" = ["E402"]

@@ -1,0 +1,27 @@
+[
+  {
+    "shape": "rect",
+    "name": "ischemia",
+    "params": { "x0": 6.0, "x1": 10.0, "y0": 0.0, "y1": 10.0 },
+    "overrides": {
+      "AP_c1": 0.13,
+      "AP_a": 0.20,
+      "D_LONG": 0.05,
+      "D_TRANS": 0.01,
+      "T_MAX": 20.0
+    }
+  },
+  {
+    "shape": "circle",
+    "name": "scar",
+    "params": { "cx": 8.0, "cy": 5.0, "r": 1.0 },
+    "overrides": {
+      "AP_c1": 0.0,
+      "D_LONG": 0.001,
+      "D_TRANS": 0.001,
+      "T_MAX": 0.0,
+      "MU": 5.0,
+      "MU_F": 15.0
+    }
+  }
+]
