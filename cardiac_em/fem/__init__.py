@@ -23,6 +23,7 @@ from .mesh import (
     n_vertices_global,
     owned_dof_coordinates,
 )
+from .tissue import Tissue
 
 __all__ = [
     "build_mesh",
@@ -33,4 +34,5 @@ __all__ = [
     "owned_dof_coordinates",
     "n_cells_global",
     "n_vertices_global",
+    "Tissue",
 ]
