@@ -44,6 +44,8 @@ import dolfinx.mesh as dmesh
 from ufl import (
     Identity,
     TestFunction,
+    conditional,
+    gt,
     TrialFunction,
     derivative,
     det,
@@ -142,8 +144,15 @@ class MechanicsSolver:
         self.n_cells_owned = self.DG0.dofmap.index_map.size_local
 
         self.law = active_law or IsometricLaw()
-        self.lambda_old = fem.Function(self.DG0, name="lambda_f_prev")
-        self.lambda_old.x.array[:] = 1.0
+        # Выключатель закона φ: на преднагрузке активного напряжения нет, и
+        # скорость растяжения к силе клеток отношения не имеет.
+        self._law_on = fem.Constant(self.mesh, dolfinx.default_scalar_type(1.0))
+        # Перемещения прошлого механического шага. Прошлое растяжение
+        # берётся как √I₄(u_пред) в ТЕХ ЖЕ квадратурных точках, что и
+        # текущее: если хранить его одним значением на ячейку, разброс λ_f
+        # внутри ячейки (у зажатых граней) превращается в ложную скорость —
+        # 0.003 по λ за 1 мс это уже ~0.9·v_max, и Ньютон не сходится.
+        self.u_old = fem.Function(self.V, name="u_prev")
         self.dt = fem.Constant(self.mesh, dolfinx.default_scalar_type(dt_mech))
 
         self.bcs: list = []
@@ -171,7 +180,9 @@ class MechanicsSolver:
         if not self.law.uses_velocity:
             return self.T_act
         _, _, _, _, I4 = kinematics(u, self.tissue)
-        return self.T_act * self.law.factor(sqrt(I4), self.lambda_old, self.dt)
+        _, _, _, _, I4_old = kinematics(self.u_old, self.tissue)
+        phi = self.law.factor(sqrt(I4), sqrt(I4_old), self.dt)
+        return self.T_act * conditional(gt(self._law_on, 0.5), phi, 1.0)
 
     def _active_second_piola(self, u):
         """S_act = T_eff/I₄ · f₀⊗f₀ — без обращения F."""
@@ -289,6 +300,10 @@ class MechanicsSolver:
         return self._interpolate_dg0(self._effective_tension(self.u), "T_act_kPa")
 
     # ── шаг по времени и прошлое растяжение (для закона φ) ────────────
+    def enable_active_law(self, on: bool) -> None:
+        """Включить/выключить зависимость T_act от скорости (закон φ)."""
+        self._law_on.value = 1.0 if on else 0.0
+
     def set_time_step(self, dt_ms: float) -> None:
         if dt_ms <= 0:
             raise ValueError(f"шаг механики должен быть > 0, получено {dt_ms}")
@@ -297,16 +312,18 @@ class MechanicsSolver:
     def stretch_rate(self) -> np.ndarray:
         """
         dλ_f/dt на владеемых ячейках: (λ_f − λ_f,пред)/Δt — та самая
-        скорость, при которой решено равновесие.
+        скорость, при которой решено равновесие (до следующего
+        `commit_step`, который вызывается в начале следующего шага).
         """
-        lam = self.fiber_stretch().x.array[:self.n_cells_owned]
-        return (lam - self.lambda_old.x.array[:self.n_cells_owned]) / float(self.dt.value)
+        _, _, _, _, I4 = kinematics(self.u, self.tissue)
+        _, _, _, _, I4_old = kinematics(self.u_old, self.tissue)
+        rate = self._interpolate_dg0((sqrt(I4) - sqrt(I4_old)) / self.dt, "lambda_f_rate")
+        return rate.x.array[:self.n_cells_owned].copy()
 
     def commit_step(self) -> None:
-        """Запомнить текущее λ_f как «прошлое» для следующего шага."""
-        lam = self.fiber_stretch()
-        self.lambda_old.x.array[:] = lam.x.array
-        self.lambda_old.x.scatter_forward()
+        """Запомнить текущие перемещения как «прошлые» для следующего шага."""
+        self.u_old.x.array[:] = self.u.x.array
+        self.u_old.x.scatter_forward()
 
     def value_range(self, fn: fem.Function) -> tuple[float, float]:
         """Глобальный диапазон значений поля на ячейках."""

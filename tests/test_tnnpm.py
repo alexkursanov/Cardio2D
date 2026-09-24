@@ -381,11 +381,31 @@ def test_velocity_coupling_must_be_implicit():
             peak = max(peak, t_max * ce.active_tension(y, P)[0])
         return peak
 
-    assert run(1.0, implicit=False) is None, "явная связь по скорости должна разноситься"
+    with np.errstate(over="ignore", invalid="ignore"):          # разнос ожидаем
+        exploded = run(1.0, implicit=False)
+    assert exploded is None, "явная связь по скорости должна разноситься"
     coarse, fine = run(1.0, implicit=True), run(0.25, implicit=True)
     assert coarse is not None and fine is not None
     assert abs(coarse - fine) / fine < 0.01, f"пик {coarse:.2f} при 1 мс и {fine:.2f} при 0.25 мс"
     assert fine < 0.8 * t_max, "укорочение снижает силу (сила–длина и сила–скорость)"
+
+
+def test_force_velocity_stays_finite_at_absurd_velocities():
+    """
+    p(v) ограничено при нефизично быстром удлинении: иначе 0·∞ = NaN в
+    ячейках без активного напряжения (так падала преднагрузка в ткани:
+    растяжение 1 → 1.06 за «1 мс» — это v ≈ 20·v_max).
+    """
+    ce = make_cell_model("tnnpm")
+    vmax = ce.c["v_max"]
+    x = np.array([2.0, 2.4, 5.0, 20.0, 1e3])
+    p = ce._p(x * vmax)
+    assert np.all(np.isfinite(p)) and np.all(np.isfinite(ce._p_prime(x * vmax)))
+    assert np.all(np.diff(p) >= 0), "монотонность сохраняется"
+    assert 0.0 * p[-1] == 0.0
+    # до ~2.4·v_max ограничение не действует
+    lin = (0.4 * ce.c["a"] + 1.0) * 2.0 / ce.c["a"] + 1.0
+    np.testing.assert_allclose(p[0], lin * np.exp((2.0 - 0.1) ** 4), rtol=1e-12)
 
 
 def test_rogers_mcculloch_keeps_its_potential_clip():

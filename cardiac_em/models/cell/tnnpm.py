@@ -111,6 +111,12 @@ TNNPM_CONSTANTS: dict[str, float] = {
     # длины саркомера, мкм (tnnpm)
     "SL_slack": 1.67,       # длина провиса: l₁ = 0
     "SL_rest": 2.1,         # начальная длина одиночной клетки
+    # предел показателя экспоненты в p(v) при быстром удлинении:
+    # α_G(x − x₁)^α_P ≤ 30, то есть p ограничено при x > ~2.4 (v > 2.4·v_max).
+    # Защита от переполнения при нефизичных скоростях (итерации Ньютона,
+    # растяжение при преднагрузке): 0·∞ дало бы NaN. На физиологических
+    # скоростях не влияет.
+    "p_exp_cap": 30.0,
 }
 
 #: Начальные условия (стационар при 1 Гц в диастоле); механика
@@ -253,7 +259,8 @@ class _TNNPMCore(CellModel):
         with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
             neg = a * (1.0 + x) / ((a - x) * (1.0 + 0.6 * x))
             lin = (0.4 * a + 1.0) * x / a + 1.0
-            fast = lin * np.exp(c["alpha_G"] * np.maximum(x - x1, 0.0) ** c["alpha_P"])
+            fast = lin * np.exp(np.minimum(c["alpha_G"] * np.maximum(x - x1, 0.0) ** c["alpha_P"],
+                                           c["p_exp_cap"]))
         return np.where(v <= -vm, 0.0, np.where(v <= 0.0, neg, np.where(v <= x1 * vm, lin, fast)))
 
     def _p_prime(self, v):
@@ -265,7 +272,7 @@ class _TNNPMCore(CellModel):
             neg = a * (1.0 + 0.4 * a + 1.2 * x + 0.6 * x ** 2) / (vm * ((a - x) * (1.0 + 0.6 * x)) ** 2)
             lin = np.full_like(v, (0.4 * a + 1.0) / (a * vm))
             dx = np.maximum(x - x1, 0.0)
-            fast = np.exp(aG * dx ** aP) * ((0.4 * a + 1.0) / a + aG * aP
+            fast = np.exp(np.minimum(aG * dx ** aP, c["p_exp_cap"])) * ((0.4 * a + 1.0) / a + aG * aP
                                             * (1.0 + (0.4 * a + 1.0) * x / a) * dx ** (aP - 1.0)) / vm
         return np.where(v <= -vm, below,
                         np.where(v <= 0.0, neg, np.where(v <= x1 * vm, lin, fast)))

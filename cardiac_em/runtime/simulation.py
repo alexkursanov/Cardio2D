@@ -212,6 +212,7 @@ class Simulation:
 
         spec = self.config.mesh.mechanical
         p = self.config.preload
+        self.mechanics.enable_active_law(False)
         if p.cell_relax_ms > 0:
             # До растяжения: клетки приходят к своему покою (регионы с
             # другими параметрами — к своему). См. PreloadProtocol.
@@ -233,6 +234,11 @@ class Simulation:
         # клетки узнают растяжение преднагрузки (скорость — ноль)
         self._feed_stretch(zero_rate=True)
         self.mechanics.commit_step()
+        self.mechanics.enable_active_law(True)
+        # Сила покоя клеток (у TNNPM λ·N_покой ≈ 0.001 кПа) — в механику
+        # сразу, чтобы начальное состояние было согласовано: переданное
+        # и полученное T_act совпадают уже в момент старта.
+        self._couple_and_solve()
         self.is_preloaded = True
         self._notify("on_preload_done")
 
@@ -255,10 +261,9 @@ class Simulation:
                 "resume нужно вызывать на свежесобранной Simulation")
         spec = self.config.mesh.mechanical
         self.mechanics.set_bcs(bcs_clamped_at_current_state(self.mechanics, spec))
-        # «Прошлое» растяжение в чекпоинте не хранится: берём текущее, то
-        # есть первый шаг после продолжения считается от покоя волокна.
-        # Для моделей без закона φ(v) это не влияет ни на что.
-        self.mechanics.commit_step()
+        # «Прошлое» растяжение в чекпоинте не хранится: _couple_and_solve
+        # берёт текущее, то есть первый шаг после продолжения считается
+        # от покоя волокна. Для моделей без закона φ(v) это ни на что не влияет.
         self._couple_and_solve()
         self.t_ms = float(t_ms)
         self.is_preloaded = True
@@ -317,12 +322,25 @@ class Simulation:
         """
         if dt_ms is not None:
             self.mechanics.set_time_step(dt_ms)
+        # Прошлое положение запоминается В НАЧАЛЕ шага, а не в конце:
+        # тогда до следующего шага скорость — та, с которой решено
+        # равновесие, и её видят диагностика, запись полей и клетки.
+        # (Если запоминать в конце, после шага скорость уже нулевая, и
+        # в выводе φ ≡ 1 — так и было, нашёл тест.)
+        self.mechanics.commit_step()
         t_act_e = self.electrics.active_tension_dg0()
         t_act_m = self.transfer.apply(t_act_e)
         self.mechanics.set_active_tension(t_act_m)
-        self.last_newton_iterations = self.mechanics.solve_or_raise()
+        try:
+            self.last_newton_iterations = self.mechanics.solve_or_raise()
+        except RuntimeError as exc:
+            # когда именно — без этого сбой в середине удара не локализовать
+            t = self._t_last_mech + (dt_ms or 0.0)
+            peak = float(np.max(t_act_m)) if len(t_act_m) else 0.0
+            raise RuntimeError(f"{exc} [механический шаг к t = {t:g} мс; "
+                               f"T_act, переданное клетками на этом ранге, до "
+                               f"{peak:.3g} кПа]") from exc
         self._feed_stretch()
-        self.mechanics.commit_step()
 
     def _feed_stretch(self, zero_rate: bool = False) -> None:
         """λ_f и dλ_f/dt с ячеек механики — в узлы электрики, клеткам."""

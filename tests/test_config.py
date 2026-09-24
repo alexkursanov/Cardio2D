@@ -475,6 +475,15 @@ def test_negative_t_max_rejected():
     assert ActiveStressParams(t_max=0.0).t_max == 0.0   # рубец — законно
 
 
+def test_single_cell_thick_mechanical_mesh_warns():
+    """Механика в одну ячейку по высоте: все узлы на зажатых гранях."""
+    cfg = SimulationConfig(mesh=DualMeshConfig(
+        electric=RectangleMeshSpec(nx=80, ny=4, lx_mm=8.0, ly_mm=0.4),
+        mechanical=RectangleMeshSpec(nx=20, ny=1, lx_mm=8.0, ly_mm=0.4)))
+    assert any("без внутренних узлов" in w for w in cfg.check())
+    assert not any("без внутренних узлов" in w for w in SimulationConfig.default().check())
+
+
 def _main() -> int:
     tests = [(name, obj) for name, obj in sorted(globals().items())
              if name.startswith("test_") and callable(obj)]

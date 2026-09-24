@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ufl import conditional, exp, le, max_value
+from ufl import conditional, exp, le, max_value, min_value
 
 __all__ = ["ActiveTensionLaw", "IsometricLaw", "TNNPMForceVelocity",
            "ACTIVE_LAWS", "make_active_law"]
@@ -38,7 +38,10 @@ class TNNPMForceVelocity(ActiveTensionLaw):
         x > x₁        : ((0.4a + 1)x/a + 1)·exp(α_G (x − x₁)^α_P)
 
     Знаменатели защищены от нуля так, что в используемых ветвях значения
-    не меняются (UFL вычисляет все ветви).
+    не меняются (UFL вычисляет все ветви). Показатель экспоненты ограничен
+    p_exp_cap (= 30, см. константы TNNPM): без этого при нефизично быстром
+    удлинении (итерация Ньютона, растяжение при преднагрузке) p = ∞, и в
+    ячейках с T_iso = 0 получалось 0·∞ = NaN.
     """
 
     name = "tnnpm_force_velocity"
@@ -51,6 +54,7 @@ class TNNPMForceVelocity(ActiveTensionLaw):
         self.alpha_G = float(constants["alpha_G"])
         self.alpha_P = float(constants["alpha_P"])
         self.sl0 = float(constants["SL_slack"])
+        self.exp_cap = float(constants["p_exp_cap"])
 
     def velocity(self, stretch, stretch_old, dt):
         """Скорость сократительного элемента, мкм/мс."""
@@ -61,7 +65,8 @@ class TNNPMForceVelocity(ActiveTensionLaw):
         x = self.velocity(stretch, stretch_old, dt) / self.v_max
         shorten = a * (1.0 + x) / (max_value(a - x, a) * max_value(1.0 + 0.6 * x, 0.4))
         lin = (0.4 * a + 1.0) * x / a + 1.0
-        fast = lin * exp(self.alpha_G * max_value(x - x1, 0.0) ** self.alpha_P)
+        fast = lin * exp(min_value(self.alpha_G * max_value(x - x1, 0.0) ** self.alpha_P,
+                                   self.exp_cap))
         return conditional(le(x, -1.0), 0.0,
                            conditional(le(x, 0.0), shorten,
                                        conditional(le(x, x1), lin, fast)))
