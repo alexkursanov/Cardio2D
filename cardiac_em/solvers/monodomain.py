@@ -301,7 +301,9 @@ class MonodomainSolver:
         Сигнал активации вычисляется на P1 (там полное состояние
         клетки) и затем интерполируется на DG0.
         """
-        act = self.cell.active_tension(self.state, self.params)
+        # Сила, которую клетки передают ткани: у моделей с законом φ(v)
+        # в ткани — при нулевой скорости (см. CellModel.isometric_tension)
+        act = self.cell.isometric_tension(self.state, self.params)
         self._act_p1.x.array[:self.n_local] = act
         self._act_p1.x.scatter_forward()
 

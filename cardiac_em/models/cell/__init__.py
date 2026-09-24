@@ -22,12 +22,13 @@ from __future__ import annotations
 
 from .base import CellModel
 from .rogers_mcculloch import RogersMcCullochModel
-from .tnnpm import TNNPMModel
+from .tnnpm import TNNPMIsometricModel, TNNPMModel
 
 __all__ = [
     "CellModel",
     "RogersMcCullochModel",
     "TNNPMModel",
+    "TNNPMIsometricModel",
     "CELL_MODELS",
     "make_cell_model",
     "available_models",
@@ -38,6 +39,7 @@ __all__ = [
 CELL_MODELS: dict[str, type[CellModel]] = {
     RogersMcCullochModel.name: RogersMcCullochModel,
     TNNPMModel.name: TNNPMModel,
+    TNNPMIsometricModel.name: TNNPMIsometricModel,
 }
 
 

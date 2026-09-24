@@ -73,6 +73,11 @@ class CellModel(ABC):
                      активированным — для карт времён активации. Для
                      безразмерных моделей 0.5; модели в мВ задают своё
                      (например, −40 мВ)
+    tissue_active_law: имя закона φ(v) на уровне ткани (models/active),
+                     если сила клетки зависит от скорости волокна
+    stretch_sensitive: клетка зависит от деформации ткани: на каждом
+                     механическом шаге ей передаются λ_f и dλ_f/dt
+                     (`apply_stretch`)
     potential_clip : пределы, в которые монодомен обрезает потенциал после
                      шага диффузии (подавление выбросов Кранка–Николсона на
                      крутом фронте); None — не обрезать. Смысл имеет только
@@ -89,6 +94,8 @@ class CellModel(ABC):
     suggested_dt_ms: float = 0.05
     activation_threshold: float = 0.5
     potential_clip: tuple[float, float] | None = None
+    stretch_sensitive: bool = False
+    tissue_active_law: str | None = None
 
     # ── размеры и начальное состояние ─────────────────────────────────
     @property
@@ -112,6 +119,26 @@ class CellModel(ABC):
         TissueBaseParams, как у модели Роджерса–МакКаллоха).
         """
         return {}
+
+    def isometric_tension(self, y: np.ndarray,
+                          params: dict[str, np.ndarray]) -> np.ndarray:
+        """
+        Сила, передаваемая ткани (в тех же единицах, что active_tension).
+        У моделей, чья сила зависит от скорости волокна, это сила при
+        нулевой скорости — зависимость от скорости ткань добавляет сама,
+        неявно (`tissue_active_law`, см. models/active). У остальных —
+        просто active_tension.
+        """
+        return self.active_tension(y, params)
+
+    def apply_stretch(self, y: np.ndarray, stretch: np.ndarray,
+                      stretch_rate: np.ndarray) -> None:
+        """
+        Сообщить клеткам растяжение волокна ткани λ_f и его скорость
+        dλ_f/dt в узлах (на месте, в массиве состояния). Вызывается на
+        каждом механическом шаге, если `stretch_sensitive`. Модели без
+        механической обратной связи деформацию не видят.
+        """
 
     def initial_state(self, n_nodes: int) -> np.ndarray:
         """Состояние покоя, размноженное по узлам, (n_nodes, n_states)."""

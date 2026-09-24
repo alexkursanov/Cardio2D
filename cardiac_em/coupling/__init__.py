@@ -9,13 +9,16 @@
 сетки.
 
 Состав:
-    transfer.py — операторы переноса DG0 → DG0 и выбор стратегии
+    transfer.py — операторы переноса DG0 → DG0 и выбор стратегии;
+                  CellToNodeSampler — обратный канал (растяжение волокна
+                  с ячеек механики в узлы электрики)
 """
 
 from __future__ import annotations
 
 from .transfer import (
     AveragingTransfer,
+    CellToNodeSampler,
     FieldTransfer,
     NearestCellTransfer,
     make_transfer,
@@ -25,5 +28,6 @@ __all__ = [
     "FieldTransfer",
     "AveragingTransfer",
     "NearestCellTransfer",
+    "CellToNodeSampler",
     "make_transfer",
 ]

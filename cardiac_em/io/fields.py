@@ -26,6 +26,8 @@
       m_coords, m_u                                   — узлы мех. сетки
       m_cell_coords, m_t_act, m_lambda_f, m_J, m_sigma_xx, m_region
                                                       — ячейки мех. сетки
+      (e_t_act — сила, переданная клетками; m_t_act — действующее
+      напряжение с законом φ(v). Без закона они совпадают после переноса.)
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ def write_snapshot(sim, path, requested_ms=()) -> Path:
 
     m_c, m_u = gather_owned(m.V, m.u.x.array.reshape(-1, 2), comm)
     cell_fields = np.column_stack([
-        m.T_act.x.array,
+        m.active_tension_actual().x.array,
         m.fiber_stretch().x.array,
         m.jacobian_determinant().x.array,
         m.cauchy_stress(0, 0).x.array,
@@ -147,7 +149,8 @@ class FieldWriter(Observer):
         self._xe.write_function(e.t_act_function(), t)
 
         self._xm.write_function(m.u, t)
-        self._xm.write_function(m.T_act, t)
+        self._xm.write_function(m.T_act, t)                  # переданная клетками
+        self._xm.write_function(m.active_tension_actual(), t)   # действующая
         self._xm.write_function(m.fiber_stretch(), t)
         self._xm.write_function(m.jacobian_determinant(), t)
         self._xm.write_function(m.cauchy_stress(0, 0), t)

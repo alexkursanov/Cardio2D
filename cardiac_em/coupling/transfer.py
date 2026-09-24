@@ -53,12 +53,13 @@ import numpy as np
 from mpi4py import MPI
 
 from ..config.mesh_spec import RectangleMeshSpec
-from ..fem.mesh import owned_dof_coordinates
+from ..fem.mesh import dof_coordinates, owned_dof_coordinates
 
 __all__ = [
     "FieldTransfer",
     "AveragingTransfer",
     "NearestCellTransfer",
+    "CellToNodeSampler",
     "make_transfer",
 ]
 
@@ -261,6 +262,70 @@ class NearestCellTransfer(FieldTransfer):
     def apply(self, values_owned_src: np.ndarray) -> np.ndarray:
         values = self._gather_source(values_owned_src)
         return values[self._idx]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  ОБРАТНЫЙ КАНАЛ: ЯЧЕЙКИ МЕХАНИКИ → УЗЛЫ ЭЛЕКТРИКИ
+# ═══════════════════════════════════════════════════════════════════════
+
+class CellToNodeSampler:
+    """
+    Значения по ячейкам (DG0) структурированной сетки-источника — в УЗЛЫ
+    (P1) сетки-приёмника: растяжение волокна и его скорость с
+    механической сетки нужны клеткам в узлах электрической.
+
+    Узел внутри ячейки источника получает её значение; узел на границе
+    ячеек (ребро или вершина) — среднее по всем примыкающим. Для
+    вложенных сеток это точное «поднятие» кусочно-постоянного поля; для
+    невложенных — выборка того же поля в точках узлов.
+
+    Результат — на ВСЕХ локальных узлах приёмника, включая гало: каждый
+    ранг видит источник целиком (allgather) и считает гало сам, так что
+    обмен после не нужен.
+    """
+
+    def __init__(self, DG0_src, V_dst, src_spec: RectangleMeshSpec):
+        self.comm = DG0_src.mesh.comm
+        self.n_src_owned = DG0_src.dofmap.index_map.size_local
+        self._src_sizes = self.comm.allgather(self.n_src_owned)
+        self.spec = src_spec
+        n_cells = src_spec.nx * src_spec.ny
+
+        keys_local = AveragingTransfer._cell_key(owned_dof_coordinates(DG0_src), src_spec)
+        self._src_keys = np.concatenate(self.comm.allgather(keys_local))
+        # у треугольной сетки на одну клетку-квадрат приходится две ячейки
+        self._key_counts = np.bincount(self._src_keys, minlength=n_cells)
+        if np.any(self._key_counts == 0):
+            raise ValueError("сетка-источник покрывает не всю область")
+
+        imap = V_dst.dofmap.index_map
+        self.n_dst_local = imap.size_local + imap.num_ghosts
+        xy = dof_coordinates(V_dst)[:self.n_dst_local, :2]
+        tol_x, tol_y = 1e-9 * src_spec.hx_mm, 1e-9 * src_spec.hy_mm
+
+        cols = []
+        for dx in (-tol_x, tol_x):
+            for dy in (-tol_y, tol_y):
+                ix = np.clip(np.floor((xy[:, 0] + dx) / src_spec.hx_mm).astype(np.int64),
+                             0, src_spec.nx - 1)
+                iy = np.clip(np.floor((xy[:, 1] + dy) / src_spec.hy_mm).astype(np.int64),
+                             0, src_spec.ny - 1)
+                cols.append(iy * src_spec.nx + ix)
+        cand = np.stack(cols, axis=1)                       # (узлы, 4) с повторами
+        pairs = {(n, k) for n in range(len(cand)) for k in cand[n]}
+        pairs = np.array(sorted(pairs), dtype=np.int64).reshape(-1, 2)
+        self._node = pairs[:, 0]
+        self._key = pairs[:, 1]
+        self._weight = 1.0 / np.bincount(self._node, minlength=self.n_dst_local)[self._node]
+
+    def apply(self, values_owned_src: np.ndarray) -> np.ndarray:
+        expected = self._src_sizes[self.comm.rank]
+        v = np.ascontiguousarray(values_owned_src[:expected], dtype=np.float64)
+        values = np.concatenate(self.comm.allgather(v))
+        cell_mean = (np.bincount(self._src_keys, weights=values,
+                                 minlength=len(self._key_counts)) / self._key_counts)
+        return np.bincount(self._node, weights=cell_mean[self._key] * self._weight,
+                           minlength=self.n_dst_local)
 
 
 # ═══════════════════════════════════════════════════════════════════════

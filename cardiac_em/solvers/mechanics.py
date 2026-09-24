@@ -56,6 +56,7 @@ from ufl import (
 
 from ..config.mesh_spec import RectangleMeshSpec
 from ..fem.tissue import Tissue
+from ..models.active import ActiveTensionLaw, IsometricLaw
 from ..models.passive import (
     PassiveMaterial,
     TransverselyIsotropicExponential,
@@ -83,6 +84,14 @@ class MechanicsSolver:
     material : PassiveMaterial, optional
         Модель пассивной упругости; по умолчанию трансверсально-
         изотропная экспоненциальная.
+    active_law : ActiveTensionLaw, optional
+        Как действующее активное напряжение зависит от скорости волокна:
+        T_act = T_iso · φ(λ_f(u), λ_f,пред, Δt). По умолчанию φ ≡ 1 (модели
+        без механической обратной связи). У TNNPM — сила–скорость,
+        вычисляемая НЕЯВНО, внутри равновесия (см. models/active).
+    dt_mech : float
+        Шаг механики, мс — для скорости в законе φ; меняется
+        `set_time_step` (последний шаг может быть короче).
     petsc_options : dict, optional
         Настройки SNES. По умолчанию — Ньютон с возвратом по шагу и
         прямым решателем: на задачах такого размера он надёжнее
@@ -103,7 +112,9 @@ class MechanicsSolver:
 
     def __init__(self, tissue: Tissue,
                  material: PassiveMaterial | None = None,
-                 petsc_options: dict | None = None):
+                 petsc_options: dict | None = None,
+                 active_law: ActiveTensionLaw | None = None,
+                 dt_mech: float = 1.0):
         self.tissue = tissue
         self.mesh = tissue.mesh
         self.comm = self.mesh.comm
@@ -124,8 +135,16 @@ class MechanicsSolver:
         # DG0 берём из tissue: так T_act поячеечно совпадает с полями
         # параметров, и перепутать порядок невозможно.
         self.DG0 = tissue.DG0
-        self.T_act = fem.Function(self.DG0, name="T_act_kPa")
+        # T_act — сила, переданная клетками (у моделей с законом φ — при
+        # нулевой скорости, T_iso). Действующее напряжение T_iso·φ —
+        # `active_tension_actual()`.
+        self.T_act = fem.Function(self.DG0, name="T_input_kPa")
         self.n_cells_owned = self.DG0.dofmap.index_map.size_local
+
+        self.law = active_law or IsometricLaw()
+        self.lambda_old = fem.Function(self.DG0, name="lambda_f_prev")
+        self.lambda_old.x.array[:] = 1.0
+        self.dt = fem.Constant(self.mesh, dolfinx.default_scalar_type(dt_mech))
 
         self.bcs: list = []
         self._bcs_dirty = True
@@ -147,11 +166,18 @@ class MechanicsSolver:
         self.residual = inner(F * (S_pass + S_act), grad(v)) * dx
         self.jacobian = derivative(self.residual, u, du)
 
+    def _effective_tension(self, u):
+        """T_act · φ(v(u)) — действующее активное напряжение (UFL)."""
+        if not self.law.uses_velocity:
+            return self.T_act
+        _, _, _, _, I4 = kinematics(u, self.tissue)
+        return self.T_act * self.law.factor(sqrt(I4), self.lambda_old, self.dt)
+
     def _active_second_piola(self, u):
-        """S_act = T_act/I₄ · f₀⊗f₀ — без обращения F."""
+        """S_act = T_eff/I₄ · f₀⊗f₀ — без обращения F."""
         f0 = self.tissue.fiber_vector()
         _, _, _, _, I4 = kinematics(u, self.tissue)
-        return (self.T_act / I4) * outer(f0, f0)
+        return (self._effective_tension(u) / I4) * outer(f0, f0)
 
     # ── активное напряжение ───────────────────────────────────────────
     def set_active_tension(self, values_owned: np.ndarray) -> None:
@@ -253,10 +279,34 @@ class MechanicsSolver:
 
         f0 = self.tissue.fiber_vector()
         f_cur = (F * f0) / sqrt(I4)          # направление волокна после деформации
-        sigma_act = (self.T_act / J) * outer(f_cur, f_cur)
+        sigma_act = (self._effective_tension(self.u) / J) * outer(f_cur, f_cur)
 
         return self._interpolate_dg0((sigma_pass + sigma_act)[i, j],
                                      f"sigma_{i}{j}")
+
+    def active_tension_actual(self) -> fem.Function:
+        """Действующее активное напряжение T_iso·φ, кПа, на ячейках."""
+        return self._interpolate_dg0(self._effective_tension(self.u), "T_act_kPa")
+
+    # ── шаг по времени и прошлое растяжение (для закона φ) ────────────
+    def set_time_step(self, dt_ms: float) -> None:
+        if dt_ms <= 0:
+            raise ValueError(f"шаг механики должен быть > 0, получено {dt_ms}")
+        self.dt.value = dt_ms
+
+    def stretch_rate(self) -> np.ndarray:
+        """
+        dλ_f/dt на владеемых ячейках: (λ_f − λ_f,пред)/Δt — та самая
+        скорость, при которой решено равновесие.
+        """
+        lam = self.fiber_stretch().x.array[:self.n_cells_owned]
+        return (lam - self.lambda_old.x.array[:self.n_cells_owned]) / float(self.dt.value)
+
+    def commit_step(self) -> None:
+        """Запомнить текущее λ_f как «прошлое» для следующего шага."""
+        lam = self.fiber_stretch()
+        self.lambda_old.x.array[:] = lam.x.array
+        self.lambda_old.x.scatter_forward()
 
     def value_range(self, fn: fem.Function) -> tuple[float, float]:
         """Глобальный диапазон значений поля на ячейках."""
@@ -271,6 +321,7 @@ class MechanicsSolver:
 
     def summary(self) -> str:
         return (f"  Механика     : {self.material.describe()}\n"
+                f"                 {self.law.describe()}\n"
                 f"                 SNES {self._options.get('snes_type')}, "
                 f"{self._options.get('pc_type')}")
 

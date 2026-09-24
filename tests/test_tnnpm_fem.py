@@ -7,6 +7,11 @@ TNNPM в ткани (Шаг 11).
     pytest tests/test_tnnpm_fem.py -v
     mpirun -n 2 python -m pytest tests/test_tnnpm_fem.py -q
 
+Модель "tnnpm" — вариант для ткани: в клетке только сократительный
+элемент, пассивная механика — в ткани; ткань сообщает клеткам длину
+саркомера (l₁ = 1.67·(λ_f − 1)) и скорость, а сила–скорость учитывается
+неявно в равновесии (models/active).
+
 Полоска 8 × 0.4 мм (h = 0.1 мм), правая половина — 15-я минута ишемии
 по сценарию автора модели (K_o 9.4 мМ, ATP_i 4.0 мМ, KmATP 0.38).
 Перед счётом 300 мс подготовки без стимула (preload.cell_relax_ms):
@@ -134,9 +139,96 @@ def test_active_tension_reaches_mechanics(strip):
     from cardiac_em.analysis import open_run
 
     s = open_run(strip["out"]).series()
-    assert 40.0 < s["t_act_electric_max"].max() < 70.0, "T_act/T_MAX ≈ 1 на пике здоровой ткани"
+    # переданная клетками сила (при нулевой скорости) сохраняется переносом
     np.testing.assert_allclose(s["t_act_electric_integral"], s["t_act_mech_integral"],
                                rtol=1e-10, atol=1e-10)
+    assert 20.0 < s["t_act_mech_max"].max() < 80.0
+
+
+def test_coupling_is_two_way(strip):
+    """
+    Здоровая половина укорачивается, растягивая ослабленную ишемическую;
+    действующее напряжение ниже переданного (укорочение снижает силу);
+    клетки видят ту длину, что у ткани; колебаний от связи нет.
+    """
+    from cardiac_em.analysis import open_run
+
+    s = open_run(strip["out"]).series()
+    assert s["lambda_f_min"].min() < 1.2575 - 0.01, "активная зона должна укорачиваться"
+    assert s["lambda_f_max"].max() > 1.2575 + 0.01, "ослабленная зона — растягиваться"
+    assert s["t_act_actual_max"].max() < s["t_act_mech_max"].max(), \
+        "сила при укорочении меньше изометрической"
+    turns = np.sum(np.diff(np.sign(np.diff(s["lambda_f_min"]))) != 0)
+    assert turns <= 6, f"λ_f колеблется: {turns} смен направления"
+
+    sim = strip["result"].sim
+    cell, e, m = sim.cell_model, sim.electrics, sim.mechanics
+    lam_nodes = sim.stretch_sampler.apply(m.fiber_stretch().x.array[:m.n_cells_owned])
+    np.testing.assert_allclose(cell.sarcomere_length(e.state), 1.67 * lam_nodes, atol=1e-12)
+
+
+def test_force_velocity_law_matches_cell_function(tmp_path):
+    """
+    φ(v) в форме механики (UFL) совпадает с p(v) клетки (numpy) во всех
+    ветвях. Задаём u = 0 (λ_f = 1) и λ_f,пред по ячейкам так, чтобы
+    скорости покрыли все участки кривой.
+    """
+    from cardiac_em.fem import Tissue, build_mesh
+    from cardiac_em.models.active import make_active_law
+    from cardiac_em.models.cell import make_cell_model
+    from cardiac_em.solvers import MechanicsSolver
+
+    cell = make_cell_model("tnnpm")
+    c = cell.c
+    mesh = build_mesh(RectangleMeshSpec(nx=6, ny=2, lx_mm=6.0, ly_mm=2.0))
+    solver = MechanicsSolver(Tissue.for_mechanics(mesh, TissueBaseParams()),
+                             active_law=make_active_law(cell), dt_mech=1.0)
+    n = solver.n_cells_owned
+    x = np.linspace(-1.5, 2.0, 12)[:n] if n else np.zeros(0)
+    solver.lambda_old.x.array[:n] = 1.0 - x * c["v_max"] * 1.0 / c["SL_slack"]
+    solver.lambda_old.x.scatter_forward()
+    solver.set_active_tension(np.ones(n))
+    phi = solver.active_tension_actual().x.array[:n]
+    np.testing.assert_allclose(phi, cell._p(x * c["v_max"]), rtol=1e-12, atol=1e-12)
+
+
+def test_cell_to_node_sampler_on_nested_meshes():
+    """Узел внутри ячейки — её значение; на границе — среднее соседних."""
+    from cardiac_em.coupling import CellToNodeSampler
+    from cardiac_em.fem import Tissue, build_mesh, dof_coordinates
+
+    spec_m = RectangleMeshSpec(nx=6, ny=2, lx_mm=6.0, ly_mm=2.0)
+    spec_e = RectangleMeshSpec(nx=24, ny=8, lx_mm=6.0, ly_mm=2.0)
+    tm = Tissue.for_mechanics(build_mesh(spec_m), TissueBaseParams())
+    te = Tissue.for_electrics(build_mesh(spec_e), TissueBaseParams())
+    sampler = CellToNodeSampler(tm.DG0, te.P1, spec_m)
+
+    n_m = tm.DG0.dofmap.index_map.size_local
+    cxy = dof_coordinates(tm.DG0)[:n_m, :2]
+    ix, iy = np.floor(cxy[:, 0]).astype(int), np.floor(cxy[:, 1]).astype(int)
+    values = ix + 10.0 * iy                          # значение ячейки (ix, iy)
+    got = sampler.apply(values)
+
+    xy = dof_coordinates(te.P1)[:len(got), :2]
+    expected = []
+    for x, y in xy:
+        xs = {min(max(int(np.floor(x + d)), 0), 5) for d in (-1e-9, 1e-9)}
+        ys = {min(max(int(np.floor(y + d)), 0), 1) for d in (-1e-9, 1e-9)}
+        expected.append(np.mean([a + 10.0 * b for a in xs for b in ys]))
+    np.testing.assert_allclose(got, expected, atol=1e-12)
+
+
+def test_isometric_variant_runs_without_feedback(tmp_path):
+    from cardiac_em.control import apply_overrides
+    from cardiac_em.runtime import Simulation
+
+    cfg = apply_overrides(_config(_shared(tmp_path), t_end=5.0, regions=[]),
+                          {"cell_model": "tnnpm_isometric", "preload.cell_relax_ms": 0.0})
+    sim = Simulation(cfg)
+    assert sim.stretch_sampler is None and not sim.active_law.uses_velocity
+    sim.preload()
+    sim.run()
+    assert sim.t_ms == 5.0
 
 
 # ═══════════════════════════════════════════════════════════════════════

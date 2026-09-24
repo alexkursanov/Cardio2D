@@ -89,7 +89,7 @@ def _full_rhs(model, y, t, stim, params):
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_interface():
-    m = make_cell_model("tnnpm")
+    m = make_cell_model("tnnpm_isometric")
     assert m.n_states == 29 and len(m.gate_indices) == 12
     assert m.state_names[m.v_index] == "V"
     assert set(m.default_params()) == set(m.param_names)
@@ -101,7 +101,7 @@ def test_interface():
 
 def test_initial_state_matches_reference():
     """Включая механику: деление пополам по l₂ при силе преднагрузки r0."""
-    m = make_cell_model("tnnpm")
+    m = make_cell_model("tnnpm_isometric")
     ref = Reference().calculate_init_conditions()
     np.testing.assert_array_equal(m.resting_state(), ref)
 
@@ -136,7 +136,7 @@ def _states_to_check(m):
 
 
 def test_rhs_matches_reference_in_all_branches():
-    m = make_cell_model("tnnpm")
+    m = make_cell_model("tnnpm_isometric")
     ref = Reference()
     ref.calculate_init_conditions()
     params = _params(m, 1)
@@ -152,7 +152,7 @@ def test_rhs_matches_reference_in_all_branches():
 
 def test_rhs_matches_reference_with_ischemic_parameters():
     """Региональные параметры доходят туда же, куда атрибуты эталона."""
-    m = make_cell_model("tnnpm")
+    m = make_cell_model("tnnpm_isometric")
     ref = Reference()
     ref.calculate_init_conditions()
     ref.K_o, ref.ATPi, ref.KmATP, ref.K_mNa, ref.g_Na, ref.g_CaL = 9.4, 4.0, 0.38, 80.0, 10.0, 4e-5
@@ -176,7 +176,7 @@ def _beat():
     """Один удар 700 мс, четыре стадии в одном векторном прогоне (кэш)."""
     if _BEAT:
         return _BEAT
-    m = make_cell_model("tnnpm")
+    m = make_cell_model("tnnpm_isometric")
     names = list(STAGES)
     P = _params(m, 4, K_o=[STAGES[n][0] for n in names],
                 ATP_i=[STAGES[n][1] for n in names], KmATP=[STAGES[n][2] for n in names])
@@ -265,6 +265,127 @@ def test_cell_relax_setting():
     assert PreloadProtocol.from_dict(p.to_dict()).cell_relax_ms == 300.0
     assert PreloadProtocol.from_dict({}).cell_relax_ms == 0.0, "старые конфиги — без подготовки"
     _raises(ValueError, PreloadProtocol, cell_relax_ms=-1.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  4. ВАРИАНТ ДЛЯ ТКАНИ: ТОЛЬКО СОКРАТИТЕЛЬНЫЙ ЭЛЕМЕНТ
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_ce_variant_interface():
+    ce = make_cell_model("tnnpm")
+    assert ce.stretch_sensitive and ce.tissue_active_law == "tnnpm_force_velocity"
+    assert {"l_1", "v", "N", "A"} <= set(ce.state_names)
+    assert not {"w", "l_2", "l_3"} & set(ce.state_names), "пассивных элементов в клетке нет"
+    y = ce.initial_state(3)
+    ce.apply_stretch(y, np.array([1.0, 1.2575, 1.1]), np.array([0.0, 0.0, -0.001]))
+    np.testing.assert_allclose(ce.sarcomere_length(y), [1.67, 1.67 * 1.2575, 1.67 * 1.1])
+    np.testing.assert_allclose(y[:, ce._i["v"]], [0.0, 0.0, -0.00167])
+
+
+def test_ce_variant_shares_electrophysiology_with_reference_variant():
+    """
+    Мембрана, кальций, RyR, тропонин и кинетика мостиков у обоих
+    вариантов — одна и та же. Сравниваем производные общих переменных
+    в одинаковых состояниях.
+    """
+    iso = make_cell_model("tnnpm_isometric")
+    ce = make_cell_model("tnnpm")
+    rng = np.random.default_rng(3)
+    shared = [n for n in ce.state_names if n in iso.state_names]
+    for _ in range(20):
+        y_iso = iso.resting_state() * (1 + 0.05 * rng.standard_normal(iso.n_states))
+        y_iso[iso._i["V"]] = rng.uniform(-90, 30)
+        y_iso[iso._i["N"]] = rng.uniform(0, 0.2)
+        y_ce = np.array([y_iso[iso._i[n]] for n in ce.state_names])
+        d_iso = _full_rhs(iso, y_iso, 5.0, 0.0, _params(iso, 1))
+        d_ce = _full_rhs(ce, y_ce, 5.0, 0.0, _params(ce, 1))
+        for n in shared:
+            if n in ("l_1", "v"):       # это уже механика, у вариантов разная
+                continue
+            a, b = d_iso[iso._i[n]], d_ce[ce._i[n]]
+            assert abs(a - b) <= 1e-12 * max(1.0, abs(a)), f"{n}: {a} против {b}"
+
+
+def _ce_isometric_beat(stretches):
+    ce = make_cell_model("tnnpm")
+    n = len(stretches)
+    P = _params(ce, n)
+    y = ce.initial_state(n)
+    ce.apply_stretch(y, np.asarray(stretches), np.zeros(n))
+    y[:, ce._i["N"]] = ce._N_steady(y)
+    F = []
+    for k in range(int(round(700.0 / DT))):
+        t = k * DT
+        y = ce.step(t, y, DT, np.full(n, 52.0 if 10.0 <= t < 11.0 else 0.0), P)
+        F.append(ce.active_tension(y, P))
+    return np.array(F), ce
+
+
+def test_ce_isometric_peak_defines_the_normalization_and_frank_starling():
+    """
+    При саркомере 2.1 мкм (λ = 1.2575) пик F_CE/F_REF_CE = 1 — так
+    определена нормировка. На меньшей длине сила меньше (сила–длина).
+    """
+    T, _ = _ce_isometric_beat([1.10, 1.20, 1.2575])
+    peaks = T.max(axis=0)
+    assert abs(peaks[2] - 1.0) < 0.01, f"пик при SL 2.1 мкм: {peaks[2]:.4f}"
+    assert peaks[0] < peaks[1] < peaks[2], f"сила–длина: {peaks}"
+
+
+def test_velocity_coupling_must_be_implicit():
+    """
+    Обоснование схемы связи на цепочке «возбуждённый + покоящийся
+    элемент», общая длина зажата, пассивный закон — материал ткани в
+    одноосном приближении. Если брать скорость с прошлого механического
+    шага, схема разносится; если скорость входит в равновесие (как в
+    ткани, models/active), решение устойчиво и сходится по шагу.
+    """
+    try:
+        from scipy.optimize import brentq
+    except ImportError:
+        return
+    ce = make_cell_model("tnnpm")
+    c = ce.c
+    sl0, L, t_max = c["SL_slack"], 2 * 1.2575, 60.0
+
+    def passive(lam):
+        I1, I4 = lam * lam + 1 / (lam * lam), lam * lam
+        return (np.exp(I1 - 2) * (2 * lam - 2 / lam ** 3)
+                + 3.0 * (I4 - 1) * np.exp(2.0 * (I4 - 1) ** 2) * 2 * lam)
+
+    def run(dt_mech, implicit, t_end=300.0):
+        P = _params(ce, 2)
+        y = ce.initial_state(2)
+        lam = np.array([1.2575, 1.2575])
+        ce.apply_stretch(y, lam, np.zeros(2))
+        peak = 0.0
+        for k in range(int(t_end / dt_mech)):
+            for j in range(int(round(dt_mech / DT))):
+                t = k * dt_mech + j * DT
+                y = ce.step(t, y, DT, np.array([52.0 if 10 <= t < 11 else 0.0, 0.0]), P)
+            t_iso = t_max * ce.isometric_tension(y, P)
+            v_old = y[:, ce._i["v"]]
+
+            def tension(i, lv):
+                v = sl0 * (lv - lam[i]) / dt_mech if implicit else v_old[i]
+                return t_iso[i] * ce._p(np.array([v]))[0]
+
+            try:
+                l1 = brentq(lambda a: passive(a) + tension(0, a)
+                            - passive(L - a) - tension(1, L - a), 0.6, L - 0.6)
+            except ValueError:
+                return None                                     # равновесия нет — разнос
+            new = np.array([l1, L - l1])
+            ce.apply_stretch(y, new, (new - lam) / dt_mech)
+            lam = new
+            peak = max(peak, t_max * ce.active_tension(y, P)[0])
+        return peak
+
+    assert run(1.0, implicit=False) is None, "явная связь по скорости должна разноситься"
+    coarse, fine = run(1.0, implicit=True), run(0.25, implicit=True)
+    assert coarse is not None and fine is not None
+    assert abs(coarse - fine) / fine < 0.01, f"пик {coarse:.2f} при 1 мс и {fine:.2f} при 0.25 мс"
+    assert fine < 0.8 * t_max, "укорочение снижает силу (сила–длина и сила–скорость)"
 
 
 def test_rogers_mcculloch_keeps_its_potential_clip():

@@ -50,8 +50,9 @@ import numpy as np
 from mpi4py import MPI
 
 from ..config.simulation import SimulationConfig
-from ..coupling import make_transfer
+from ..coupling import CellToNodeSampler, make_transfer
 from ..fem import Tissue, build_mesh_pair
+from ..models.active import make_active_law
 from ..models.cell import CellModel, make_cell_model
 from ..models.passive import PassiveMaterial, make_passive_material
 from ..solvers import (
@@ -135,11 +136,19 @@ class Simulation:
         # ── солверы и связь ───────────────────────────────────────────
         self.electrics = MonodomainSolver(
             self.tissue_e, self.cell_model, config.stimulus)
-        self.mechanics = MechanicsSolver(self.tissue_m, material)
+        self.active_law = make_active_law(self.cell_model)
+        self.mechanics = MechanicsSolver(self.tissue_m, material,
+                                         active_law=self.active_law,
+                                         dt_mech=config.time.dt_mech_ms)
         self.transfer = make_transfer(
             self.tissue_e.DG0, self.tissue_m.DG0,
             config.mesh.electric, config.mesh.mechanical,
             strategy=transfer_strategy)
+        # Обратный канал: растяжение волокна и его скорость — клеткам.
+        self.stretch_sampler = (
+            CellToNodeSampler(self.tissue_m.DG0, self.tissue_e.P1, config.mesh.mechanical)
+            if self.cell_model.stretch_sensitive else None)
+        self._t_last_mech = 0.0
 
         # ── состояние хода счёта ──────────────────────────────────────
         self.t_ms = 0.0
@@ -221,6 +230,9 @@ class Simulation:
         self.mechanics.set_bcs(
             bcs_clamped_at_current_state(self.mechanics, spec))
         self.last_newton_iterations = self.mechanics.solve_or_raise()
+        # клетки узнают растяжение преднагрузки (скорость — ноль)
+        self._feed_stretch(zero_rate=True)
+        self.mechanics.commit_step()
         self.is_preloaded = True
         self._notify("on_preload_done")
 
@@ -243,6 +255,10 @@ class Simulation:
                 "resume нужно вызывать на свежесобранной Simulation")
         spec = self.config.mesh.mechanical
         self.mechanics.set_bcs(bcs_clamped_at_current_state(self.mechanics, spec))
+        # «Прошлое» растяжение в чекпоинте не хранится: берём текущее, то
+        # есть первый шаг после продолжения считается от покоя волокна.
+        # Для моделей без закона φ(v) это не влияет ни на что.
+        self.mechanics.commit_step()
         self._couple_and_solve()
         self.t_ms = float(t_ms)
         self.is_preloaded = True
@@ -262,6 +278,7 @@ class Simulation:
 
         schedule = Schedule(self.config.time, self.config.output, t_start_ms)
         self.t_ms = schedule.t_start_ms
+        self._t_last_mech = schedule.t_start_ms
         self._notify("on_start", schedule)
 
         dt = schedule.dt
@@ -275,7 +292,8 @@ class Simulation:
                 for obs in per_step:
                     obs.on_electric_step(self, tick)
                 if tick.is_mech:
-                    self._couple_and_solve()
+                    self._couple_and_solve(dt_ms=tick.t_end_ms - self._t_last_mech)
+                    self._t_last_mech = tick.t_end_ms
                     self.t_ms = tick.t_end_ms
                     self._notify("on_mech_tick", tick)
         except BaseException as exc:
@@ -291,12 +309,31 @@ class Simulation:
         self._notify("on_finish")
         return schedule
 
-    def _couple_and_solve(self) -> None:
-        """T_act с электрической сетки → на механическую → равновесие."""
+    def _couple_and_solve(self, dt_ms: float | None = None) -> None:
+        """
+        T_act с электрической сетки → на механическую → равновесие →
+        (если клетки чувствуют деформацию) растяжение и скорость волокна
+        обратно клеткам.
+        """
+        if dt_ms is not None:
+            self.mechanics.set_time_step(dt_ms)
         t_act_e = self.electrics.active_tension_dg0()
         t_act_m = self.transfer.apply(t_act_e)
         self.mechanics.set_active_tension(t_act_m)
         self.last_newton_iterations = self.mechanics.solve_or_raise()
+        self._feed_stretch()
+        self.mechanics.commit_step()
+
+    def _feed_stretch(self, zero_rate: bool = False) -> None:
+        """λ_f и dλ_f/dt с ячеек механики — в узлы электрики, клеткам."""
+        if self.stretch_sampler is None:
+            return
+        m = self.mechanics
+        lam = m.fiber_stretch().x.array[:m.n_cells_owned]
+        rate = np.zeros_like(lam) if zero_rate else m.stretch_rate()
+        self.cell_model.apply_stretch(self.electrics.state,
+                                      self.stretch_sampler.apply(lam),
+                                      self.stretch_sampler.apply(rate))
 
     # ── диагностика ───────────────────────────────────────────────────
     def diagnostics(self, electric: bool = True) -> dict:
@@ -315,6 +352,7 @@ class Simulation:
         s_lo, s_hi = m.value_range(m.cauchy_stress(0, 0))
 
         t_m = m.T_act.x.array[:m.n_cells_owned]
+        t_real = m.active_tension_actual().x.array[:m.n_cells_owned]
         d = {
             "t_ms": self.t_ms,
             "lambda_f_min": lam_lo, "lambda_f_max": lam_hi,
@@ -322,6 +360,9 @@ class Simulation:
             "sigma_xx_min": s_lo, "sigma_xx_max": s_hi,
             "t_act_mech_max": self._gmax(t_m),
             "t_act_mech_integral": self._gsum(t_m) * self._area_m,
+            # действующее напряжение (с законом φ(v)); без него — то же
+            "t_act_actual_max": self._gmax(t_real),
+            "t_act_actual_integral": self._gsum(t_real) * self._area_m,
             "newton_iterations": int(self.last_newton_iterations),
         }
 

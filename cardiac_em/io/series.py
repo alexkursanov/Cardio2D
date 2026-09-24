@@ -28,6 +28,7 @@ SERIES_COLUMNS = (
     "u_min", "u_max",
     "t_act_electric_max", "t_act_electric_integral",
     "t_act_mech_max", "t_act_mech_integral",
+    "t_act_actual_max", "t_act_actual_integral",
     "lambda_f_min", "lambda_f_max",
     "J_min", "J_max",
     "sigma_xx_min", "sigma_xx_max",

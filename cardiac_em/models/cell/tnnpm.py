@@ -22,23 +22,32 @@ tests/tnnpm_reference.py.
       K_o    5.4   6.2   8.0   9.4
       ATP_i  6.8   6.0   4.5   4.0
       KmATP  0.09  0.30  0.35  0.38
-* Механика — только ИЗОМЕТРИЧЕСКИЙ режим (dl₃ = −w, l₂ + l₃ = const):
-  в ткани клетка пока не чувствует деформацию (обратной связи нет),
-  и каждая точка сокращается изометрически при начальной длине l₀.
-  Изотонический режим оригинала (послегрузка) в ткани не используется.
+* Механика — в двух вариантах:
+
+  "tnnpm" (TNNPMModel) — ДЛЯ ТКАНИ. В клетке только сократительный
+      элемент: N, A, l₁, v. Вся пассивная механика — в материале ткани.
+      Ткань задаёт клетке l₁ = 1.67·(λ_f − 1) и v = 1.67·dλ_f/dt; клетка
+      отдаёт ткани λ·N (сила при нулевой скорости), а множитель p(v)
+      ткань вычисляет неявно, внутри равновесия (models/active) — явная
+      связь по скорости неустойчива (tests/test_tnnpm.py,
+      test_velocity_coupling_must_be_implicit).
+
+  "tnnpm_isometric" (TNNPMIsometricModel) — полная реологическая схема
+      оригинала в изометрии (l₂ + l₃ = l₀). Совпадает с моделью автора;
+      для одиночной клетки и сверки. В ткани деформацию не видит.
 
 Единицы: время мс, потенциал мВ, концентрации мМ, токи пА/пФ, длины
 мкм, силы мН (как в исходной модели).
 
 Активное напряжение
 -------------------
-    T_act = T_MAX · (F − F_rest) / F_REF,   F = β₃(exp(α₃·l₃) − 1)
+    tnnpm:            T_act = T_MAX · λ·p(v)·N / F_REF_CE,  F_REF_CE = 60.56 мН
+    tnnpm_isometric:  T_act = T_MAX · (F_XSE − r0) / F_REF,  F_REF = 35.4 мН
 
-F — сила на внешнем последовательном элементе (полная сила препарата в
-изометрии), F_rest = r0 — сила преднагрузки в покое, F_REF = 35.4 мН —
-пиковая активная сила стационарного удара при 1 Гц с параметрами по
-умолчанию. Так T_MAX — пиковое активное напряжение здоровой ткани в
-кПа (у модели Роджерса–МакКаллоха T_MAX/4 — там другая нормировка).
+Нормировки — пики изометрического удара с параметрами по умолчанию
+(у tnnpm — при саркомере 2.1 мкм, это штатная преднагрузка 1.2575).
+Так T_MAX — пиковое изометрическое активное напряжение здоровой ткани в
+кПа (у модели Роджерса–МакКаллоха пик — T_MAX/4, другая нормировка).
 
 Параметры по узлам
 ------------------
@@ -56,7 +65,7 @@ import numpy as np
 
 from .base import CellModel
 
-__all__ = ["TNNPMModel", "TNNPM_CONSTANTS", "TNNPM_INITIAL"]
+__all__ = ["TNNPMModel", "TNNPMIsometricModel", "TNNPM_CONSTANTS", "TNNPM_INITIAL"]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -96,8 +105,12 @@ TNNPM_CONSTANTS: dict[str, float] = {
     "g_bCa": 0.000592, "g_pCa": 0.2476, "K_pCa": 0.0005, "g_CaL": 5.0e-5,
     # ишемия (I_K(ATP)); в исходном файле — "[ATP]i", "KmATP", "gKATP"
     "ATP_i": 6.8, "KmATP": 0.0976, "g_KATP": 1.59294,
-    # нормировка активного напряжения, мН (см. докстринг модуля)
-    "F_REF": 35.4,
+    # нормировка активного напряжения, мН
+    "F_REF": 35.4,          # tnnpm_isometric: пик (F_XSE − r0)
+    "F_REF_CE": 60.56,      # tnnpm: пик F_CE изометрического удара при SL 2.1 мкм
+    # длины саркомера, мкм (tnnpm)
+    "SL_slack": 1.67,       # длина провиса: l₁ = 0
+    "SL_rest": 2.1,         # начальная длина одиночной клетки
 }
 
 #: Начальные условия (стационар при 1 Гц в диастоле); механика
@@ -115,9 +128,13 @@ TNNPM_INITIAL: dict[str, float] = {
     "RI": 1.17319890e-02,
 }
 
-_STATE_NAMES = ("d", "f2", "fCass", "f", "Ca_SR", "Ca_i", "Ca_ss", "h", "j", "m",
-                "V", "K_i", "Xr1", "Xr2", "Xs", "Na_i", "r", "s",
-                "v", "w", "N", "A", "l_1", "l_2", "l_3", "R", "O", "I", "RI")
+_EP = ("d", "f2", "fCass", "f", "Ca_SR", "Ca_i", "Ca_ss", "h", "j", "m",
+       "V", "K_i", "Xr1", "Xr2", "Xs", "Na_i", "r", "s")
+_RYR = ("R", "O", "I", "RI")
+#: полная реологическая схема (изометрия) — как в исходной модели
+_STATES_ISOMETRIC = _EP + ("v", "w", "N", "A", "l_1", "l_2", "l_3") + _RYR
+#: только сократительный элемент; l_1 и v задаёт ткань
+_STATES_CE = _EP + ("v", "N", "A", "l_1") + _RYR
 _GATES = ("d", "f2", "fCass", "f", "h", "j", "m", "Xr1", "Xr2", "Xs", "r", "s")
 
 #: Параметры, которые можно задавать по узлам (регионы: "cell:<имя>")
@@ -127,89 +144,39 @@ _REGIONAL = ("K_o", "Na_o", "Ca_o", "ATP_i", "KmATP", "g_KATP", "K_mNa",
              "Vmax_up", "V_rel", "V_leak")
 
 
-def _ix(name: str) -> int:
-    return _STATE_NAMES.index(name)
+class _TNNPMCore(CellModel):
+    """
+    Общая часть обоих вариантов: мембрана, кальций (TP06 + RyR Shannon),
+    тропонин C и кинетика мостиков (функции оригинала). Механика —
+    в наследниках (`_initial_state`, `_mech_rhs`, `force`).
+    """
 
-
-class TNNPMModel(CellModel):
-    name = "tnnpm"
-    state_names = _STATE_NAMES
-    v_index = _ix("V")
-    gate_indices = tuple(_ix(g) for g in _GATES)
+    state_names: tuple[str, ...] = ()
     param_names = _REGIONAL
     tension_kind = "scaled"
     suggested_dt_ms = 0.02
     activation_threshold = -40.0
+
+    def __init_subclass__(cls, **kw):
+        super().__init_subclass__(**kw)
+        if cls.state_names:
+            cls.v_index = cls.state_names.index("V")
+            cls.gate_indices = tuple(cls.state_names.index(g) for g in _GATES)
 
     def __init__(self, constants: dict[str, float] | None = None):
         unknown = set(constants or {}) - set(TNNPM_CONSTANTS)
         if unknown:
             raise KeyError(f"неизвестные константы TNNPM: {sorted(unknown)}")
         self.c = {**TNNPM_CONSTANTS, **(constants or {})}
+        self._i = {n: k for k, n in enumerate(self.state_names)}
         self._rest = self._initial_state()
 
     # ── параметры по умолчанию для тканевых полей ─────────────────────
     def default_params(self) -> dict[str, float]:
         return {k: self.c[k] for k in self.param_names}
 
-    # ── начальное состояние ───────────────────────────────────────────
-    def _initial_state(self) -> np.ndarray:
-        """
-        Электрика и кальций — из TNNPM_INITIAL; механика — изометрическое
-        равновесие при силе преднагрузки r0 (calculate_init_conditions
-        оригинала: деление пополам по l₂).
-        """
-        c = self.c
-        y = np.array([TNNPM_INITIAL[n] for n in _STATE_NAMES], dtype=np.float64)
-        l_2 = self._bisect_l2()
-        y[_ix("l_2")] = l_2
-        y[_ix("l_1")] = l_2 + (math.log(c["beta_1"]) - math.log(
-            c["r0"] + c["beta_1"] - c["beta_2"] * (math.exp(c["alpha_2"] * l_2) - 1))) / c["alpha_1"]
-        y[_ix("N")] = self._N0(l_2)
-        y[_ix("l_3")] = math.log((c["r0"] + c["beta_3"]) / c["beta_3"]) / c["alpha_3"]
-        y[_ix("v")] = 0.0
-        y[_ix("w")] = 0.0
-        return y
-
-    def _N0(self, l0: float) -> float:
-        c = self.c
-        return (c["r0"] - c["beta_2"] * (math.exp(c["alpha_2"] * l0) - 1)) / c["llambda"]
-
-    def _fi(self, l_1: float) -> float:
-        """fi(l) оригинала: dN/dt = 0 при v = 0 и N = N0(l)."""
-        one = np.array([0.0])
-        A = np.array([6.31929074e-04])            # как в оригинале
-        l = np.array([l_1])
-        N0 = self._N0(l_1)
-        return float(self._k_p(one)[0] * self._M(A)[0] * self._n1(l)[0] * self._L_oz(l)[0]
-                     * (1.0 - N0) - self._k_m(one)[0] * N0)
-
-    def _bisect_l2(self) -> float:
-        c = self.c
-        l100 = math.log((c["r0"] + c["beta_2"]) / c["beta_2"]) / c["alpha_2"]
-        a, b = 0.9 * l100, l100
-        if self._fi(a) == 0.0:
-            return a
-        if self._fi(b) == 0.0:
-            return b
-        x = a + (b - a) / 2.0
-        for _ in range(200):
-            if abs(self._fi(x)) < 1e-7:
-                break
-            x = a + (b - a) / 2.0
-            if self._fi(x) < 0:
-                a = x
-            else:
-                b = x
-        return x
-
     def resting_state(self) -> np.ndarray:
         return self._rest.copy()
-
-    @property
-    def l0(self) -> float:
-        """Длина l₂ + l₃ изометрического препарата, мкм."""
-        return float(self._rest[_ix("l_2")] + self._rest[_ix("l_3")])
 
     # ═══════════════════════════════════════════════════════════════════
     #  ФУНКЦИИ МЕХАНИКИ (векторные версии функций оригинала)
@@ -308,8 +275,8 @@ class TNNPMModel(CellModel):
     # ═══════════════════════════════════════════════════════════════════
 
     def gate_inf_tau(self, t, y, params):
-        V = y[:, _ix("V")]
-        Ca_ss = y[:, _ix("Ca_ss")]
+        V = y[:, self._i["V"]]
+        Ca_ss = y[:, self._i["Ca_ss"]]
         e = np.exp
 
         d_inf = 1.0 / (1.0 + e((-8.0 - V) / 7.5))
@@ -377,7 +344,7 @@ class TNNPMModel(CellModel):
         """Ионные токи, пА/пФ — для анализа и для правых частей."""
         c = self.c
         p = params
-        g = lambda n: y[:, _ix(n)]                               # noqa: E731
+        g = lambda n: y[:, self._i[n]]                               # noqa: E731
         V, Ca_i, Ca_ss, Na_i, K_i = g("V"), g("Ca_i"), g("Ca_ss"), g("Na_i"), g("K_i")
         FRT = c["F"] / (c["R"] * c["T"])
         RTF = 1.0 / FRT
@@ -429,10 +396,9 @@ class TNNPMModel(CellModel):
     def rhs_non_gate(self, t, y, stim, params):
         c = self.c
         p = params
-        g = lambda n: y[:, _ix(n)]                               # noqa: E731
+        g = lambda n: y[:, self._i[n]]                               # noqa: E731
         Ca_SR, Ca_i, Ca_ss = g("Ca_SR"), g("Ca_i"), g("Ca_ss")
-        v, w, N, A = g("v"), g("w"), g("N"), g("A")
-        l_1, l_2, l_3 = g("l_1"), g("l_2"), g("l_3")
+        N, A = g("N"), g("A")
         R, O, I, RI = g("R"), g("O"), g("I"), g("RI")
         e = np.exp
 
@@ -477,7 +443,98 @@ class TNNPMModel(CellModel):
                  + i_Stim - 2.0 * cur["i_NaK"] + cur["i_K_ATP"]) / (Vc * F_) * Cm
         dNa_i = -(cur["i_Na"] + cur["i_b_Na"] + 3.0 * cur["i_NaK"] + 3.0 * cur["i_NaCa"]) / (Vc * F_) * Cm
 
-        # ── механика (изометрия) ──────────────────────────────────────
+        out = {"Ca_SR": dCa_SR, "Ca_i": dCa_i, "Ca_ss": dCa_ss, "V": dV, "K_i": dK_i,
+               "Na_i": dNa_i, "A": dA, "R": dR, "O": dO, "I": dI, "RI": dRI}
+        out.update(self._mech_rhs(y))
+        # порядок — как в non_gate_indices (порядок state_names без ворот)
+        return np.stack([out[self.state_names[i]] for i in self.non_gate_indices], axis=1)
+
+    def calcium(self, y):
+        return y[:, self._i["Ca_i"]]
+
+    def _ix(self, name: str) -> int:
+        return self._i[name]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  ВАРИАНТ 1: ПОЛНАЯ РЕОЛОГИЧЕСКАЯ СХЕМА, ИЗОМЕТРИЯ (как в оригинале)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TNNPMIsometricModel(_TNNPMCore):
+    """
+    TNNPM с полной реологической схемой (CE, SE, PE, XSE и вязкости) в
+    изометрии: l₂ + l₃ = l₀. Совпадает с исходной моделью автора (см.
+    tests/tnnpm_reference.py). Для одиночной клетки и сверки; в ткани
+    длину клетки не видит — там нужен вариант `tnnpm`.
+
+        T_act = T_MAX · (F_XSE − r0) / F_REF,  F_REF = 35.4 мН
+    """
+
+    name = "tnnpm_isometric"
+    state_names = _STATES_ISOMETRIC
+
+    # ── начальное состояние ───────────────────────────────────────────
+    def _initial_state(self) -> np.ndarray:
+        """
+        Электрика и кальций — из TNNPM_INITIAL; механика — изометрическое
+        равновесие при силе преднагрузки r0 (calculate_init_conditions
+        оригинала: деление пополам по l₂).
+        """
+        c = self.c
+        y = np.array([TNNPM_INITIAL[n] for n in self.state_names], dtype=np.float64)
+        l_2 = self._bisect_l2()
+        y[self._ix("l_2")] = l_2
+        y[self._ix("l_1")] = l_2 + (math.log(c["beta_1"]) - math.log(
+            c["r0"] + c["beta_1"] - c["beta_2"] * (math.exp(c["alpha_2"] * l_2) - 1))) / c["alpha_1"]
+        y[self._ix("N")] = self._N0(l_2)
+        y[self._ix("l_3")] = math.log((c["r0"] + c["beta_3"]) / c["beta_3"]) / c["alpha_3"]
+        y[self._ix("v")] = 0.0
+        y[self._ix("w")] = 0.0
+        return y
+
+    def _N0(self, l0: float) -> float:
+        c = self.c
+        return (c["r0"] - c["beta_2"] * (math.exp(c["alpha_2"] * l0) - 1)) / c["llambda"]
+
+    def _fi(self, l_1: float) -> float:
+        """fi(l) оригинала: dN/dt = 0 при v = 0 и N = N0(l)."""
+        one = np.array([0.0])
+        A = np.array([6.31929074e-04])            # как в оригинале
+        l = np.array([l_1])
+        N0 = self._N0(l_1)
+        return float(self._k_p(one)[0] * self._M(A)[0] * self._n1(l)[0] * self._L_oz(l)[0]
+                     * (1.0 - N0) - self._k_m(one)[0] * N0)
+
+    def _bisect_l2(self) -> float:
+        c = self.c
+        l100 = math.log((c["r0"] + c["beta_2"]) / c["beta_2"]) / c["alpha_2"]
+        a, b = 0.9 * l100, l100
+        if self._fi(a) == 0.0:
+            return a
+        if self._fi(b) == 0.0:
+            return b
+        x = a + (b - a) / 2.0
+        for _ in range(200):
+            if abs(self._fi(x)) < 1e-7:
+                break
+            x = a + (b - a) / 2.0
+            if self._fi(x) < 0:
+                a = x
+            else:
+                b = x
+        return x
+
+    @property
+    def l0(self) -> float:
+        """Длина l₂ + l₃ изометрического препарата, мкм."""
+        return float(self._rest[self._ix("l_2")] + self._rest[self._ix("l_3")])
+
+    def _mech_rhs(self, y):
+        c = self.c
+        g = lambda n: y[:, self._i[n]]                           # noqa: E731
+        v, w, N, A = g("v"), g("w"), g("N"), g("A")
+        l_1, l_2, l_3 = g("l_1"), g("l_2"), g("l_3")
+        e = np.exp
         K_chi = (self._k_p(v) * self._M(A) * self._n1(l_1) * self._L_oz(l_1) * (1.0 - N)
                  - self._k_m(v) * N)
         dN = K_chi
@@ -501,23 +558,109 @@ class TNNPMModel(CellModel):
               - (c["alpha_1"] * c["beta_1"] * e(c["alpha_1"] * (l_2 - l_1)) * (w - v)
                  + stiff_23 * w) / k_S_vis)
 
-        # порядок — как в non_gate_indices (порядок state_names без ворот)
-        out = {"Ca_SR": dCa_SR, "Ca_i": dCa_i, "Ca_ss": dCa_ss, "V": dV, "K_i": dK_i,
-               "Na_i": dNa_i, "v": dv, "w": dw, "N": dN, "A": dA,
-               "l_1": v, "l_2": w, "l_3": -w,
-               "R": dR, "O": dO, "I": dI, "RI": dRI}
-        return np.stack([out[_STATE_NAMES[i]] for i in self.non_gate_indices], axis=1)
+        return {"v": dv, "w": dw, "N": dN, "l_1": v, "l_2": w, "l_3": -w}
 
-    # ── наблюдаемые ───────────────────────────────────────────────────
     def force(self, y) -> np.ndarray:
         """Сила на внешнем последовательном элементе, мН."""
         c = self.c
-        return c["beta_3"] * (np.exp(c["alpha_3"] * y[:, _ix("l_3")]) - 1.0)
+        return c["beta_3"] * (np.exp(c["alpha_3"] * y[:, self._i["l_3"]]) - 1.0)
 
     def active_tension(self, y, params):
         """(F − r0) / F_REF — безразмерно; вызывающий умножает на T_MAX."""
         c = self.c
         return (self.force(y) - c["r0"]) / c["F_REF"]
 
-    def calcium(self, y):
-        return y[:, _ix("Ca_i")]
+
+# ═══════════════════════════════════════════════════════════════════════
+#  ВАРИАНТ 2: ТОЛЬКО СОКРАТИТЕЛЬНЫЙ ЭЛЕМЕНТ — ДЛЯ ТКАНИ
+# ═══════════════════════════════════════════════════════════════════════
+
+class TNNPMModel(_TNNPMCore):
+    """
+    TNNPM для ткани: на уровне клетки остаётся только сократительный
+    элемент (CE). Вся пассивная механика (PE, SE, XSE, вязкости) — на
+    уровне ткани, в её гиперупругом материале. Решение автора модели.
+
+    Механика клетки:
+        l₁  — удлинение CE от длины провиса саркомера SL_slack = 1.67 мкм;
+              задаёт ТКАНЬ: l₁ = SL_slack · (λ_f − 1)
+        v   — скорость CE, dl₁/dt; задаёт ТКАНЬ: v = SL_slack · dλ_f/dt
+        N   — доля прикреплённых мостиков, dN/dt = k₊(v)·M(A)·n₁(l₁)·L(l₁)·(1−N) − k₋(v)·N
+        A   — Ca–тропонин C (как в полной модели, с кооперативностью π(N, A))
+
+    Между механическими шагами l₁ продолжается по последней скорости
+    (dl₁/dt = v, dv/dt = 0) и на каждом механическом шаге заменяется
+    значением от ткани (`apply_stretch`).
+
+    Сила и активное напряжение:
+        F_CE  = λ · p(v) · N                          (мН)
+        T_act = T_MAX · F_CE / F_REF_CE
+
+    F_REF_CE — пик F_CE в изометрическом ударе при саркомере 2.1 мкм
+    (l₁ = 0.43 мкм — это и есть штатная преднагрузка λ_f = 2.1/1.67 =
+    1.2575), стационар при 1 Гц. Так T_MAX — пиковое активное напряжение
+    здоровой ткани в кПа при этой длине; на других длинах и при
+    укорочении сила меньше или больше — по n₁(l₁), L(l₁) и p(v).
+    """
+
+    name = "tnnpm"
+    state_names = _STATES_CE
+    stretch_sensitive = True
+    tissue_active_law = "tnnpm_force_velocity"
+
+    def _initial_state(self) -> np.ndarray:
+        """
+        Электрика и кальций — из TNNPM_INITIAL; l₁ — при саркомере
+        SL_rest (по умолчанию 2.1 мкм), v = 0, N — стационар dN/dt = 0
+        при этой длине и покойном A.
+        """
+        c = self.c
+        y = np.array([TNNPM_INITIAL[n] for n in self.state_names], dtype=np.float64)
+        y[self._i["l_1"]] = c["SL_rest"] - c["SL_slack"]
+        y[self._i["v"]] = 0.0
+        y[self._i["N"]] = self._N_steady(y[None, :])[0]
+        return y
+
+    def _N_steady(self, y) -> np.ndarray:
+        g = lambda n: y[:, self._i[n]]                           # noqa: E731
+        v, A, l_1 = g("v"), g("A"), g("l_1")
+        on = self._k_p(v) * self._M(A) * self._n1(l_1) * self._L_oz(l_1)
+        return on / (on + self._k_m(v))
+
+    def _mech_rhs(self, y):
+        g = lambda n: y[:, self._i[n]]                           # noqa: E731
+        v, N, A, l_1 = g("v"), g("N"), g("A"), g("l_1")
+        dN = (self._k_p(v) * self._M(A) * self._n1(l_1) * self._L_oz(l_1) * (1.0 - N)
+              - self._k_m(v) * N)
+        return {"N": dN, "l_1": v, "v": np.zeros_like(v)}
+
+    # ── связь с тканью ────────────────────────────────────────────────
+    def apply_stretch(self, y: np.ndarray, stretch: np.ndarray,
+                      stretch_rate: np.ndarray) -> None:
+        """
+        Задать длину и скорость CE по растяжению волокна ткани λ_f и
+        его скорости dλ_f/dt (на месте, в массиве состояния).
+        """
+        sl0 = self.c["SL_slack"]
+        y[:, self._i["l_1"]] = sl0 * (np.asarray(stretch) - 1.0)
+        y[:, self._i["v"]] = sl0 * np.asarray(stretch_rate)
+
+    def sarcomere_length(self, y) -> np.ndarray:
+        """Длина саркомера, мкм."""
+        return self.c["SL_slack"] + y[:, self._i["l_1"]]
+
+    def force(self, y) -> np.ndarray:
+        """Сила сократительного элемента F_CE = λ·p(v)·N, мН."""
+        c = self.c
+        return c["llambda"] * self._p(y[:, self._i["v"]]) * y[:, self._i["N"]]
+
+    def active_tension(self, y, params):
+        """F_CE / F_REF_CE при текущей скорости — безразмерно (× T_MAX)."""
+        return self.force(y) / self.c["F_REF_CE"]
+
+    def isometric_tension(self, y, params):
+        """
+        λ·N / F_REF_CE — сила при v = 0. В ткань передаётся она, а
+        множитель p(v) ткань вычисляет неявно (models/active).
+        """
+        return self.c["llambda"] * y[:, self._i["N"]] / self.c["F_REF_CE"]
