@@ -1,0 +1,117 @@
+{
+  "mesh": {
+    "electric": {
+      "kind": "rectangle",
+      "nx": 40,
+      "ny": 40,
+      "lx_mm": 10.0,
+      "ly_mm": 10.0,
+      "cell_type": "quadrilateral"
+    },
+    "mechanical": {
+      "kind": "rectangle",
+      "nx": 20,
+      "ny": 20,
+      "lx_mm": 10.0,
+      "ly_mm": 10.0,
+      "cell_type": "quadrilateral"
+    }
+  },
+  "tissue_base": {
+    "reaction": {
+      "c1": 0.26,
+      "c2": 0.1,
+      "a": 0.13,
+      "b": 0.013,
+      "d": 1.0
+    },
+    "conduction": {
+      "d_long": 0.3,
+      "d_trans": 0.03,
+      "fiber_angle_deg": 0.0
+    },
+    "active": {
+      "t_max": 120.0
+    },
+    "passive": {
+      "mu": 1.0,
+      "b_iso": 1.0,
+      "mu_f": 3.0,
+      "b_f": 2.0,
+      "kappa": 100.0
+    }
+  },
+  "regions": [
+    {
+      "shape": "rect",
+      "name": "ischemia",
+      "params": {
+        "x0": 6.0,
+        "x1": 10.0,
+        "y0": 0.0,
+        "y1": 10.0
+      },
+      "overrides": {
+        "AP_c1": 0.13,
+        "AP_a": 0.2,
+        "D_LONG": 0.05,
+        "D_TRANS": 0.01,
+        "T_MAX": 20.0
+      }
+    },
+    {
+      "shape": "circle",
+      "name": "scar",
+      "params": {
+        "cx": 8.0,
+        "cy": 5.0,
+        "r": 1.0
+      },
+      "overrides": {
+        "AP_c1": 0.0,
+        "D_LONG": 0.001,
+        "D_TRANS": 0.001,
+        "T_MAX": 0.0,
+        "MU": 5.0,
+        "MU_F": 15.0
+      }
+    }
+  ],
+  "stimulus": {
+    "times_ms": [
+      50.0
+    ],
+    "duration_ms": 2.0,
+    "amplitude": 20.0,
+    "rise_time_ms": 0.5,
+    "decay_length_mm": 0.5,
+    "x_max_mm": 2.0
+  },
+  "time": {
+    "dt_electric_ms": 0.05,
+    "n_electric_per_mech": 20,
+    "t_end_ms": 600.0
+  },
+  "preload": {
+    "stretch": 1.2575,
+    "n_steps": 10
+  },
+  "output": {
+    "out_dir": "runs/ischemia",
+    "save_every_mech_steps": 10,
+    "snapshot_times_ms": [
+      100.0,
+      300.0
+    ],
+    "ckpt_every_mech_steps": 100,
+    "ckpt_keep_all": false,
+    "write_region_maps": true
+  },
+  "restart": {
+    "checkpoint_path": null,
+    "reset_time": false,
+    "allow_interp": false
+  },
+  "cell_model": "rogers_mcculloch",
+  "passive_material": "transversely_isotropic_exponential"
+}

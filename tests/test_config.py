@@ -469,6 +469,12 @@ def test_empty_model_name_rejected():
     _raises(ValueError, SimulationConfig, mesh=mesh, passive_material="  ")
 
 
+def test_negative_t_max_rejected():
+    from cardiac_em.config import ActiveStressParams
+    _raises(ValueError, ActiveStressParams, t_max=-1.0)
+    assert ActiveStressParams(t_max=0.0).t_max == 0.0   # рубец — законно
+
+
 def _main() -> int:
     tests = [(name, obj) for name, obj in sorted(globals().items())
              if name.startswith("test_") and callable(obj)]

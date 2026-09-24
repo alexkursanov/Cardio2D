@@ -54,8 +54,7 @@ dev = [
 ]
 
 [project.scripts]
-# Появится на шаге 10 вместе с control/cli.py
-# cardiac-em = "cardiac_em.control.cli:main"
+cardiac-em = "cardiac_em.control.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["cardiac_em*"]

@@ -101,6 +101,12 @@ class ActiveStressParams:
 
     FLAT_KEYS = {"t_max": "T_MAX"}
 
+    def __post_init__(self) -> None:
+        # Ноль допустим (несокращающаяся ткань, рубец); отрицательное
+        # значение превратило бы сокращение в активное растяжение.
+        if self.t_max < 0:
+            raise ValueError(f"t_max не может быть отрицательным, получено {self.t_max}")
+
 
 @dataclass(frozen=True)
 class PassiveMechParams:

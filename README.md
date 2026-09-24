@@ -25,7 +25,7 @@
 
 | Шаг | Что | Состояние | Нужен DOLFINx |
 |---|---|---|---|
-| 1 | `config/` — конфигурация, области, протоколы | готов, 42 теста | нет |
+| 1 | `config/` — конфигурация, области, протоколы | готов, 43 теста | нет |
 | 2 | `fem/mesh.py` — построение пары сеток | готов, 16 | да |
 | 3 | `fem/tissue.py` — поля параметров по регионам | готов, 17 | да |
 | 4 | `coupling/transfer.py` — перенос Э↔М | готов, 16 | да |
@@ -33,12 +33,33 @@
 | 6 | `solvers/monodomain.py` | готов, 17 | да |
 | 7 | `solvers/mechanics.py` | готов, 22 | да |
 | 8 | `runtime/` — расписание, наблюдатели, Simulation | готов, 18 + 17 | частично |
-| **9** | `io/` — поля, ряды, чекпоинты, манифест | **на проверке**, 19 + 18 | частично |
-| 10 | `control/` (CLI, серии), `analysis/` | планируется | control — да |
+| 9 | `io/` — поля, ряды, чекпоинты, манифест | готов, 20 + 18 | частично |
+| **10а** | `control/` — CLI, API, параметрические серии | **на проверке**, 17 + 8 | частично |
+| 10б | `analysis/` — чтение результатов, биомаркеры | планируется | нет |
 
 ---
 
 ## Как запустить расчёт
+
+### Из командной строки
+
+```bash
+python -m cardiac_em init base.json --nx 80 --coarsening 4   # конфиг для правки
+python -m cardiac_em show base.json                          # сводка и предупреждения
+mpirun -n 4 python -m cardiac_em run base.json --out runs/a
+python -m cardiac_em run base.json --out runs/b --t-end 3000 \
+    --restart runs/a/ckpt_last.npz --set stimulus.times_ms=[2000,2400]
+python -m cardiac_em status runs/a
+```
+
+`--set путь=значение` меняет любой параметр конфигурации без правки
+файла (опечатка в пути — ошибка). Серия прогонов описывается JSON-файлом
+и запускается `python -m cardiac_em sweep серия.json`; формат —
+`cardiac_em/control/sweep.py`, пример — `examples/sweep_tmax.json`.
+Прерванную серию достаточно запустить ещё раз: завершённые точки
+пропускаются.
+
+### Из Python
 
 ```python
 from cardiac_em.config import SimulationConfig, OutputConfig
