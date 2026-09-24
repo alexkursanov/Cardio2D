@@ -65,6 +65,8 @@ from ..models.passive import (
 __all__ = [
     "MechanicsSolver",
     "bcs_uniaxial_stretch",
+    "bcs_uniaxial_stretch_symmetric",
+    "bcs_free_contraction",
     "bcs_clamped_at_current_state",
     "bcs_prescribed_on_boundary",
 ]
@@ -288,6 +290,13 @@ def bcs_uniaxial_stretch(solver: MechanicsSolver, spec: RectangleMeshSpec,
     сужаться (эффект Пуассона). Чтобы задача не была вырожденной
     относительно сдвига всей области по y, в одной точке (0, L_y/2)
     дополнительно закрепляется u_y.
+
+    ВНИМАНИЕ: точечная связь в двумерной упругости даёт сосредоточенную
+    реакцию и потому сингулярность напряжения — деформация перестаёт
+    быть однородной даже там, где должна. Измерено на сетке 8×8:
+    λ_f = 1.055…1.108 при заданном 1.1. Вариант унаследован из исходного
+    скрипта и оставлен для сверки с ним; для новых расчётов берите
+    `bcs_uniaxial_stretch_symmetric`.
     """
     mesh, V = solver.mesh, solver.V
     Vx, Vy = V.sub(0), V.sub(1)
@@ -315,6 +324,83 @@ def bcs_uniaxial_stretch(solver: MechanicsSolver, spec: RectangleMeshSpec,
     bc_point = fem.dirichletbc(u_y_zero, dofs_point, Vy)
 
     return [bc_left, bc_right, bc_point]
+
+
+def bcs_uniaxial_stretch_symmetric(solver: MechanicsSolver,
+                                   spec: RectangleMeshSpec,
+                                   delta_x: float) -> list:
+    """
+    Одноосное растяжение вдоль x с условиями СИММЕТРИИ вместо точечной
+    связи:
+
+        x = 0   : u_x = 0
+        x = L_x : u_x = delta_x
+        y = 0   : u_y = 0        (вся нижняя грань)
+
+    Верхняя грань свободна, поэтому ткань сужается; левая и правая
+    свободны по y.
+
+    ЧЕМ ЭТО ЛУЧШЕ ТОЧЕЧНОГО ЗАКРЕПЛЕНИЯ. Вариант `bcs_uniaxial_stretch`
+    убирает смещение как жёсткого целого, фиксируя u_y в ОДНОМ узле. В
+    двумерной упругости такая связь создаёт сосредоточенную реакцию, а
+    значит сингулярность напряжения: решение перестаёт быть однородным,
+    и λ_f «гуляет» вокруг заданного значения (измерено: 1.055…1.108
+    вместо 1.1 на сетке 8×8). Условие симметрии убирает ту же моду, не
+    создавая сосредоточенной силы, и однородная деформация становится
+    точным решением.
+
+    ЧЕМ ХУЖЕ. Нижняя грань теперь не может сужаться, то есть задача
+    описывает половину симметричного образца, а не полосу со свободными
+    краями. Для преднагрузки, которая должна быть однородной, это как
+    раз то, что нужно.
+    """
+    mesh, V = solver.mesh, solver.V
+    Vx, Vy = V.sub(0), V.sub(1)
+
+    fdim, left = _boundary_facets(
+        mesh, lambda x: np.isclose(x[0], 0.0, atol=_TOL))
+    _, right = _boundary_facets(
+        mesh, lambda x: np.isclose(x[0], spec.lx_mm, atol=_TOL))
+    _, bottom = _boundary_facets(
+        mesh, lambda x: np.isclose(x[1], 0.0, atol=_TOL))
+
+    zero = fem.Constant(mesh, dolfinx.default_scalar_type(0.0))
+    shift = fem.Constant(mesh, dolfinx.default_scalar_type(float(delta_x)))
+
+    return [
+        fem.dirichletbc(zero, fem.locate_dofs_topological(Vx, fdim, left), Vx),
+        fem.dirichletbc(shift, fem.locate_dofs_topological(Vx, fdim, right), Vx),
+        fem.dirichletbc(zero, fem.locate_dofs_topological(Vy, fdim, bottom), Vy),
+    ]
+
+
+def bcs_free_contraction(solver: MechanicsSolver,
+                         spec: RectangleMeshSpec) -> list:
+    """
+    Изотонический режим: ткань может свободно менять длину.
+
+        x = 0 : u_x = 0        y = 0 : u_y = 0
+
+    Правая и верхняя грани свободны. Смещение как жёсткого целого убрано
+    условиями симметрии, без сосредоточенных реакций, поэтому однородная
+    деформация остаётся точным решением и здесь.
+
+    Используется, когда нужно увидеть УКОРОЧЕНИЕ под действием активного
+    напряжения, а не развиваемую силу.
+    """
+    mesh, V = solver.mesh, solver.V
+    Vx, Vy = V.sub(0), V.sub(1)
+
+    fdim, left = _boundary_facets(
+        mesh, lambda x: np.isclose(x[0], 0.0, atol=_TOL))
+    _, bottom = _boundary_facets(
+        mesh, lambda x: np.isclose(x[1], 0.0, atol=_TOL))
+
+    zero = fem.Constant(mesh, dolfinx.default_scalar_type(0.0))
+    return [
+        fem.dirichletbc(zero, fem.locate_dofs_topological(Vx, fdim, left), Vx),
+        fem.dirichletbc(zero, fem.locate_dofs_topological(Vy, fdim, bottom), Vy),
+    ]
 
 
 def bcs_clamped_at_current_state(solver: MechanicsSolver,

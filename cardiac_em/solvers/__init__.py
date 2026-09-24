@@ -16,8 +16,10 @@ from __future__ import annotations
 from .mechanics import (
     MechanicsSolver,
     bcs_clamped_at_current_state,
+    bcs_free_contraction,
     bcs_prescribed_on_boundary,
     bcs_uniaxial_stretch,
+    bcs_uniaxial_stretch_symmetric,
 )
 from .monodomain import MonodomainSolver
 
@@ -25,6 +27,8 @@ __all__ = [
     "MonodomainSolver",
     "MechanicsSolver",
     "bcs_uniaxial_stretch",
+    "bcs_uniaxial_stretch_symmetric",
+    "bcs_free_contraction",
     "bcs_clamped_at_current_state",
     "bcs_prescribed_on_boundary",
 ]

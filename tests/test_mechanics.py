@@ -255,33 +255,95 @@ def test_active_tension_enters_stress_analytically():
 #  ОДНООСНОЕ РАСТЯЖЕНИЕ
 # ═══════════════════════════════════════════════════════════════════════
 
-def test_uniaxial_stretch_gives_prescribed_lambda():
+def _equilibrium_free(t_act=0.0, fixed_lambda_f=None):
     """
-    При растяжении вдоль волокон λ_f должно равняться заданному
-    отношению длин. Поперечная грань свободна, поэтому ткань сужается —
-    но продольное растяжение задано жёстко.
+    Аналитическое равновесие ОДНОРОДНОЙ деформации F = diag(λ_f, λ_t)
+    при свободных гранях: σ_yy = 0 всегда, σ_xx = 0 — если λ_f не задано.
+
+    При условиях симметрии и однородной ткани решение действительно
+    однородно, поэтому FEM обязан прийти ровно сюда.
+    """
+    from scipy.optimize import fsolve
+
+    if fixed_lambda_f is None:
+        def eqs(p):
+            sig, _, _ = _cauchy_numpy(np.diag(p), t_act=t_act)
+            return [sig[0, 0], sig[1, 1]]
+        lam_f, lam_t = fsolve(eqs, [1.0, 1.0], xtol=1e-13)
+    else:
+        lam_f = fixed_lambda_f
+
+        def eq(p):
+            sig, _, _ = _cauchy_numpy(np.diag([lam_f, p[0]]), t_act=t_act)
+            return [sig[1, 1]]
+        lam_t = fsolve(eq, [1.0], xtol=1e-13)[0]
+
+    sigma, J, _ = _cauchy_numpy(np.diag([lam_f, lam_t]), t_act=t_act)
+    return float(lam_f), float(lam_t), float(J), sigma
+
+
+def test_uniaxial_stretch_symmetric_is_uniform_and_analytic():
+    """
+    С условиями симметрии однородное растяжение — точное решение.
+    Проверяем не только λ_f, но и то, что свободная верхняя грань
+    нашла правильное поперечное сужение: J и σ_xx сверяются с
+    аналитическим равновесием (σ_yy = 0).
+
+    Ожидаемые значения при λ_f = 1.1: λ_t = 0.8942, J = 0.9836,
+    σ_xx = 2.5356 кПа. Заметно, что J ≠ 1: при κ/μ = 100 материал
+    несжимаем лишь приближённо и теряет 1.6 % объёма.
+    """
+    from cardiac_em.solvers import bcs_uniaxial_stretch_symmetric
+
+    stretch = 1.1
+    _, _, J_ref, sigma_ref = _equilibrium_free(fixed_lambda_f=stretch)
+
+    solver = _make_solver()
+    solver.set_bcs(bcs_uniaxial_stretch_symmetric(
+        solver, SPEC, (stretch - 1.0) * SPEC.lx_mm))
+    solver.solve_or_raise()
+
+    lam_lo, lam_hi = _global_range(solver, solver.fiber_stretch())
+    J_lo, J_hi = _global_range(solver, solver.jacobian_determinant())
+    s_lo, s_hi = _global_range(solver, solver.cauchy_stress(0, 0))
+
+    assert math.isclose(lam_lo, stretch, rel_tol=1e-8), f"λ_f = [{lam_lo}, {lam_hi}]"
+    assert math.isclose(lam_hi, stretch, rel_tol=1e-8), f"λ_f = [{lam_lo}, {lam_hi}]"
+    assert math.isclose(J_lo, J_ref, rel_tol=1e-7) and math.isclose(J_hi, J_ref, rel_tol=1e-7), (
+        f"J = [{J_lo}, {J_hi}], аналитика {J_ref}")
+    assert math.isclose(s_lo, sigma_ref[0, 0], rel_tol=1e-6), (
+        f"σ_xx = {s_lo}, аналитика {sigma_ref[0, 0]}")
+
+
+def test_point_constraint_breaks_uniformity():
+    """
+    Фиксирует поведение УНАСЛЕДОВАННОГО варианта с точечной связью.
+
+    Закрепление u_y в одном узле даёт сосредоточенную реакцию, а в
+    двумерной упругости это сингулярность напряжения: деформация
+    перестаёт быть однородной. Измерено на сетке 8×8: λ_f = 1.055…1.108
+    при заданном 1.1. Тест нужен, чтобы при сверке с `legacy/` было
+    понятно, откуда расхождение в преднагрузке.
     """
     from cardiac_em.solvers import bcs_uniaxial_stretch
 
-    stretch = 1.1
-    delta = (stretch - 1.0) * SPEC.lx_mm
-
     solver = _make_solver()
-    solver.set_bcs(bcs_uniaxial_stretch(solver, SPEC, delta))
+    solver.set_bcs(bcs_uniaxial_stretch(solver, SPEC, 0.4))    # λ_f = 1.1
     solver.solve_or_raise()
 
     lo, hi = _global_range(solver, solver.fiber_stretch())
-    assert math.isclose(lo, stretch, rel_tol=1e-6), f"λ_f = [{lo}, {hi}]"
-    assert math.isclose(hi, stretch, rel_tol=1e-6)
+    assert hi - lo > 0.01, (
+        f"ожидался разброс λ_f от точечной связи, получено [{lo}, {hi}] — "
+        f"если сингулярность исчезла, проверьте, не сменился ли вариант ГУ")
 
 
 def test_uniaxial_stretch_contracts_transversally():
     """Эффект Пуассона: при растяжении вдоль x ткань должна сузиться по y."""
     from cardiac_em.fem import dof_coordinates
-    from cardiac_em.solvers import bcs_uniaxial_stretch
+    from cardiac_em.solvers import bcs_uniaxial_stretch_symmetric
 
     solver = _make_solver()
-    solver.set_bcs(bcs_uniaxial_stretch(solver, SPEC, 0.4))   # λ_f = 1.1
+    solver.set_bcs(bcs_uniaxial_stretch_symmetric(solver, SPEC, 0.4))   # λ_f = 1.1
     solver.solve_or_raise()
 
     n_nodes = solver.V.dofmap.index_map.size_local
@@ -295,12 +357,12 @@ def test_uniaxial_stretch_contracts_transversally():
 
 def test_stretch_is_progressive():
     """Большее растяжение — большее напряжение вдоль волокна."""
-    from cardiac_em.solvers import bcs_uniaxial_stretch
+    from cardiac_em.solvers import bcs_uniaxial_stretch_symmetric
 
     stresses = []
     for stretch in (1.02, 1.05, 1.10):
         solver = _make_solver()
-        solver.set_bcs(bcs_uniaxial_stretch(
+        solver.set_bcs(bcs_uniaxial_stretch_symmetric(
             solver, SPEC, (stretch - 1.0) * SPEC.lx_mm))
         solver.solve_or_raise()
         lo, _ = _global_range(solver, solver.cauchy_stress(0, 0))
@@ -335,55 +397,69 @@ def test_active_tension_increases_axial_stress_when_clamped():
     assert math.isclose(stresses[2] - stresses[0], 30.0, rel_tol=1e-6)
 
 
+def test_free_tissue_shrinks_without_activation():
+    """
+    Прямое следствие остаточной гидростатики: свободная ткань без всякой
+    активации сжимается. Аналитика: λ_f = 0.9963, λ_t = 0.9846,
+    J = 0.9810. Теперь это свойство проверено решением, а не только
+    формулой для напряжения.
+    """
+    from cardiac_em.solvers import bcs_free_contraction
+
+    lam_f_ref, _, J_ref, _ = _equilibrium_free(t_act=0.0)
+
+    solver = _make_solver()
+    solver.set_bcs(bcs_free_contraction(solver, SPEC))
+    solver.solve_or_raise()
+
+    lo, hi = _global_range(solver, solver.fiber_stretch())
+    J_lo, _ = _global_range(solver, solver.jacobian_determinant())
+
+    assert lam_f_ref < 1.0, "контрольная аналитика: ткань должна сжиматься"
+    assert math.isclose(lo, lam_f_ref, rel_tol=1e-7), f"λ_f = {lo}, аналитика {lam_f_ref}"
+    assert math.isclose(hi, lam_f_ref, rel_tol=1e-7)
+    assert math.isclose(J_lo, J_ref, rel_tol=1e-7)
+
+
 def test_active_tension_shortens_free_tissue():
     """
-    Изотонический режим: правая грань свободна, активное напряжение
-    вдоль волокон должно стянуть ткань.
+    Изотонический режим: при свободных правой и верхней гранях активное
+    напряжение укорачивает ткань, и величина укорочения сверяется с
+    аналитическим равновесием.
 
-    Сравнение идёт с состоянием при T_act = 0, а не с нулём: из-за
-    остаточной гидростатики ткань и без активации слегка меняет размер.
+    T_act подаётся ПОСТЕПЕННО, как и в реальном расчёте: каждое решение
+    стартует с предыдущего. Скачком Ньютон от нулевого приближения не
+    доходит — изначальный вариант теста с T_act = 40 кПа упирался в
+    50 итераций, и это была не слабость солвера: при таком напряжении
+    аналитическое равновесие уходит в λ_f ≈ 0.35 при J ≈ 0.63, то есть
+    физически осмысленного состояния там нет.
+
+    Здесь 2 кПа — и даже это даёт укорочение на 12 % (λ_f = 0.8838):
+    пассивная жёсткость модели очень мала по сравнению с активным
+    напряжением.
     """
-    import dolfinx
-    import dolfinx.fem as fem
+    from cardiac_em.solvers import bcs_free_contraction
 
-    from cardiac_em.fem import dof_coordinates
-    from cardiac_em.solvers.mechanics import _TOL, _boundary_facets
+    t_final = 2.0
+    lam_f_ref, lam_t_ref, J_ref, _ = _equilibrium_free(t_act=t_final)
 
-    def free_end_bcs(solver):
-        mesh, V = solver.mesh, solver.V
-        Vx, Vy = V.sub(0), V.sub(1)
-        fdim, left = _boundary_facets(
-            mesh, lambda x: np.isclose(x[0], 0.0, atol=_TOL))
-        zero = fem.Constant(mesh, dolfinx.default_scalar_type(0.0))
-        bc_left = fem.dirichletbc(
-            zero, fem.locate_dofs_topological(Vx, fdim, left), Vx)
+    solver = _make_solver()
+    solver.set_bcs(bcs_free_contraction(solver, SPEC))
 
-        Vy_c, _ = Vy.collapse()
-        u_y_zero = fem.Function(Vy_c)
-        dofs_pt = fem.locate_dofs_geometrical(
-            (Vy, Vy_c),
-            lambda x: (np.isclose(x[0], 0.0, atol=_TOL)
-                       & np.isclose(x[1], SPEC.ly_mm / 2.0, atol=SPEC.hy_mm)))
-        return [bc_left, fem.dirichletbc(u_y_zero, dofs_pt, Vy)]
-
-    tip = {}
-    for t_act in (0.0, 40.0):
-        solver = _make_solver()
+    history = []
+    for t_act in np.linspace(0.0, t_final, 9):
         solver.set_active_tension(np.full(solver.n_cells_owned, t_act))
-        solver.set_bcs(free_end_bcs(solver))
         solver.solve_or_raise()
+        lo, _ = _global_range(solver, solver.fiber_stretch())
+        history.append(lo)
 
-        n_nodes = solver.V.dofmap.index_map.size_local
-        xy = dof_coordinates(solver.V)[:n_nodes, :2]
-        u = solver.u.x.array[:n_nodes * 2].reshape(-1, 2)
-        right = xy[:, 0] > SPEC.lx_mm - 1e-9
-        local = float(u[right, 0].mean()) if right.any() else np.nan
-        vals = [v for v in solver.comm.allgather(local) if not np.isnan(v)]
-        tip[t_act] = float(np.mean(vals))
+    assert all(b < a for a, b in zip(history, history[1:])), (
+        f"укорочение не монотонно по T_act: {history}")
 
-    assert tip[40.0] < tip[0.0], (
-        f"активное напряжение не укоротило ткань: "
-        f"u_x на свободном крае {tip[0.0]:.5f} → {tip[40.0]:.5f} мм")
+    lo, hi = _global_range(solver, solver.fiber_stretch())
+    assert math.isclose(lo, lam_f_ref, rel_tol=1e-6), (
+        f"λ_f = {lo}, аналитика {lam_f_ref}")
+    assert math.isclose(hi, lam_f_ref, rel_tol=1e-6)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -396,12 +472,12 @@ def test_stiff_region_deforms_less():
     окружающей ткани — связка с регионами из шага 3.
     """
     from cardiac_em.fem import owned_dof_coordinates
-    from cardiac_em.solvers import bcs_uniaxial_stretch
+    from cardiac_em.solvers import bcs_uniaxial_stretch_symmetric
 
     scar = RectRegion(x0=1.5, x1=2.5, y0=0.0, y1=4.0, name="scar",
                       overrides={"MU": 50.0, "MU_F": 150.0})
     solver = _make_solver(base=TissueBaseParams(), regions=(scar,))
-    solver.set_bcs(bcs_uniaxial_stretch(solver, SPEC, 0.4))
+    solver.set_bcs(bcs_uniaxial_stretch_symmetric(solver, SPEC, 0.4))
     solver.solve_or_raise()
 
     lam = solver.fiber_stretch()
@@ -429,12 +505,12 @@ def test_stiff_region_deforms_less():
 def test_soft_region_deforms_more():
     """Обратная проверка: мягкая область растягивается сильнее."""
     from cardiac_em.fem import owned_dof_coordinates
-    from cardiac_em.solvers import bcs_uniaxial_stretch
+    from cardiac_em.solvers import bcs_uniaxial_stretch_symmetric
 
     soft = RectRegion(x0=1.5, x1=2.5, y0=0.0, y1=4.0, name="soft",
                       overrides={"MU": 0.2, "MU_F": 0.5})
     solver = _make_solver(regions=(soft,))
-    solver.set_bcs(bcs_uniaxial_stretch(solver, SPEC, 0.4))
+    solver.set_bcs(bcs_uniaxial_stretch_symmetric(solver, SPEC, 0.4))
     solver.solve_or_raise()
 
     xy = owned_dof_coordinates(solver.DG0)
@@ -492,13 +568,13 @@ def test_material_registry():
 
 def test_softer_material_gives_lower_stress():
     """Параметры ткани действительно доходят до напряжения."""
-    from cardiac_em.solvers import bcs_uniaxial_stretch
+    from cardiac_em.solvers import bcs_uniaxial_stretch_symmetric
 
     results = {}
     for mu in (0.5, 2.0):
         base = TissueBaseParams(passive=PassiveMechParams(mu=mu))
         solver = _make_solver(base=base)
-        solver.set_bcs(bcs_uniaxial_stretch(solver, SPEC, 0.4))
+        solver.set_bcs(bcs_uniaxial_stretch_symmetric(solver, SPEC, 0.4))
         solver.solve_or_raise()
         results[mu], _ = _global_range(solver, solver.cauchy_stress(0, 0))
 
