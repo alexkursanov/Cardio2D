@@ -38,6 +38,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import json
 import time
@@ -45,7 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..config.simulation import OutputConfig, SimulationConfig
+from ..config.simulation import SimulationConfig
 from .overrides import apply_overrides
 
 __all__ = ["SweepSpec", "SweepPoint", "run_sweep", "SWEEP_INDEX"]
@@ -141,14 +142,8 @@ class SweepSpec:
             except (KeyError, ValueError, TypeError) as exc:
                 msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
                 raise ValueError(f"точка {i} ({combo}): {msg}") from exc
-            out = cfg.output
-            cfg.output = OutputConfig(
-                out_dir=self.out_root / name,
-                save_every_mech_steps=out.save_every_mech_steps,
-                snapshot_times_ms=out.snapshot_times_ms,
-                ckpt_every_mech_steps=out.ckpt_every_mech_steps,
-                ckpt_keep_all=out.ckpt_keep_all,
-                write_region_maps=out.write_region_maps)
+            cfg.output = dataclasses.replace(cfg.output,
+                                             out_dir=self.out_root / name)
             points.append(SweepPoint(i, name, combo, cfg))
         return points
 
@@ -215,11 +210,19 @@ def run_sweep(spec: SweepSpec, *, console: bool = True, dry_run: bool = False,
         if rank == 0:
             write_json_atomic(index_path, index)
 
+    def sync():
+        # sweep.json пишет только ранг 0. Без барьера другой ранг, вернувшись
+        # из run_sweep, может прочитать файл раньше, чем тот дописан
+        # (найдено тестом под mpirun: вторая точка ещё значилась running).
+        if comm is not None:
+            comm.Barrier()
+
     save_index()
     say(f"Серия: {len(points)} прогонов ({spec.mode}) → {spec.out_root}")
     if dry_run:
         for p in points:
             say(f"  {p.name}: {p.label}")
+        sync()
         return index
 
     from .api import run_simulation
@@ -262,4 +265,5 @@ def run_sweep(spec: SweepSpec, *, console: bool = True, dry_run: bool = False,
 
     n_ok = sum(r["status"] == "finished" for r in index["points"])
     say(f"Серия завершена: {n_ok} из {len(points)} успешно")
+    sync()
     return index

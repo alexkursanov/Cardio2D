@@ -14,6 +14,7 @@
     electrics.xdmf/.h5, mechanics.xdmf/.h5, regions_*.xdmf
                              — поля для ParaView (io/fields.py)
     snapshots/snap_t…ms.npz  — снимки для анализа (io/fields.py)
+    activation.npz           — карты активации и APD (io/activation.py)
     ckpt_preloaded.npz, ckpt_last.npz [, ckpt_t…ms.npz]
                              — чекпоинты, если включены (io/checkpoint.py)
 
@@ -27,6 +28,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..runtime.observers import Observer
+from .activation import ActivationRecorder
 from .manifest import MANIFEST_NAME, ManifestObserver
 from .series import SeriesWriter
 
@@ -57,12 +59,17 @@ def attach_outputs(sim, *, overwrite: bool = False,
     from .fields import FieldWriter
 
     observers: list[Observer] = [
-        ManifestObserver(out_dir),
         SeriesWriter(out_dir, every_mech_steps=series_every_mech_steps),
         FieldWriter(out_dir, write_region_maps=out.write_region_maps),
     ]
     if out.checkpoints_enabled:
         observers.append(CheckpointObserver(out_dir, keep_all=out.ckpt_keep_all))
+    if out.record_activation:
+        observers.append(ActivationRecorder(out_dir, apd_level=out.apd_level))
+    # Манифест — ПОСЛЕДНИМ: при завершении он перечисляет файлы папки, и
+    # к этому моменту остальные наблюдатели должны свои файлы дописать
+    # (карты активации пишутся именно в on_finish).
+    observers.append(ManifestObserver(out_dir))
 
     for obs in observers:
         sim.add_observer(obs)

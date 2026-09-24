@@ -68,6 +68,11 @@ class CellModel(ABC):
     state_bounds   : необязательные ограничения (индекс → (lo, hi)),
                      применяемые после каждого шага
     suggested_dt_ms: ориентир по устойчивому шагу, для предупреждений
+    activation_threshold: порог потенциала (в единицах модели), при
+                     пересечении которого вверх узел считается
+                     активированным — для карт времён активации. Для
+                     безразмерных моделей 0.5; модели в мВ задают своё
+                     (например, −40 мВ)
     """
 
     name: str = "abstract"
@@ -78,6 +83,7 @@ class CellModel(ABC):
     tension_kind: str = "scaled"
     state_bounds: dict[int, tuple[float, float]] = {}
     suggested_dt_ms: float = 0.05
+    activation_threshold: float = 0.5
 
     # ── размеры и начальное состояние ─────────────────────────────────
     @property

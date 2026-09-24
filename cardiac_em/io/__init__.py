@@ -4,6 +4,7 @@
 
     manifest.py    — run.json: контракт с анализом (без DOLFINx)
     series.py      — series.csv / preload.csv (без DOLFINx)
+    activation.py  — activation.npz: карты активации и APD по ударам
     fields.py      — XDMF для ParaView и .npz-снимки для анализа
     checkpoint.py  — сохранение и продолжение расчёта
     outputs.py     — attach_outputs(sim): всё вышеперечисленное разом
@@ -18,12 +19,16 @@ runtime/): манифест и ряды можно использовать и �
 
 from __future__ import annotations
 
+from .activation import ACTIVATION_FILE, ActivationRecorder, ThresholdDetector
 from .manifest import MANIFEST_NAME, ManifestObserver, collect_environment
 from .outputs import attach_outputs
 from .series import SERIES_COLUMNS, SeriesWriter
 
 __all__ = [
     "MANIFEST_NAME",
+    "ACTIVATION_FILE",
+    "ActivationRecorder",
+    "ThresholdDetector",
     "ManifestObserver",
     "collect_environment",
     "SeriesWriter",

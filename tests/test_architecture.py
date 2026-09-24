@@ -95,12 +95,18 @@ def test_analysis_does_not_import_fem_stack():
 
 def test_analysis_does_not_import_solver_layers():
     """Постобработка работает с файлами, а не с живыми объектами солвера."""
-    forbidden = {"fem", "models", "solvers", "coupling", "runtime"}
+    forbidden = {"fem", "models", "solvers", "coupling", "runtime", "io", "control"}
     violations = []
     for path in _iter_modules("analysis"):
         for name in _imported_names(path):
+            if name.startswith(".."):
+                # относительный импорт из соседнего подпакета: ..runtime.x
+                target = name.lstrip(".").split(".")[0]
+                if target in forbidden:
+                    violations.append(f"{path.name}: from {name} import …")
+                continue
             if name.startswith("."):
-                continue  # относительные внутри analysis/ разберём ниже
+                continue  # внутри самого analysis/
             parts = name.split(".")
             if parts[0] == "cardiac_em" and len(parts) > 1 and parts[1] in forbidden:
                 violations.append(f"{path.name}: import {name}")

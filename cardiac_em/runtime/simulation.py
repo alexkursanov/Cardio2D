@@ -249,9 +249,15 @@ class Simulation:
         self._notify("on_start", schedule)
 
         dt = schedule.dt
+        # Только наблюдатели, переопределившие on_electric_step: вызов
+        # пустого метода на каждом из десятков тысяч шагов ни к чему.
+        per_step = [o for o in self.observers
+                    if type(o).on_electric_step is not Observer.on_electric_step]
         try:
             for tick in schedule:
                 self.electrics.step(tick.t_ms, dt)
+                for obs in per_step:
+                    obs.on_electric_step(self, tick)
                 if tick.is_mech:
                     self._couple_and_solve()
                     self.t_ms = tick.t_end_ms

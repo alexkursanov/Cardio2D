@@ -52,6 +52,8 @@ class OutputConfig:
     ckpt_every_mech_steps: int = 100       # 0 — не сохранять чекпоинты
     ckpt_keep_all: bool = False            # False — только ckpt_last.npz
     write_region_maps: bool = True         # карты регионов при старте
+    record_activation: bool = True         # карты активации/реполяризации
+    apd_level: float = 0.9                 # APD90: реполяризация на 90 %
 
     def __post_init__(self) -> None:
         self.out_dir = Path(self.out_dir)
@@ -64,6 +66,10 @@ class OutputConfig:
             raise ValueError(
                 f"ckpt_every_mech_steps не может быть < 0, получено "
                 f"{self.ckpt_every_mech_steps}")
+        if not 0.0 < self.apd_level < 1.0:
+            raise ValueError(
+                f"apd_level — доля реполяризации в (0, 1), например 0.9 для "
+                f"APD90; получено {self.apd_level}")
 
     @property
     def checkpoints_enabled(self) -> bool:
@@ -75,7 +81,9 @@ class OutputConfig:
                 "snapshot_times_ms": list(self.snapshot_times_ms),
                 "ckpt_every_mech_steps": self.ckpt_every_mech_steps,
                 "ckpt_keep_all": self.ckpt_keep_all,
-                "write_region_maps": self.write_region_maps}
+                "write_region_maps": self.write_region_maps,
+                "record_activation": self.record_activation,
+                "apd_level": self.apd_level}
 
     @staticmethod
     def from_dict(d: dict) -> "OutputConfig":
@@ -86,6 +94,8 @@ class OutputConfig:
             ckpt_every_mech_steps=int(d.get("ckpt_every_mech_steps", 100)),
             ckpt_keep_all=bool(d.get("ckpt_keep_all", False)),
             write_region_maps=bool(d.get("write_region_maps", True)),
+            record_activation=bool(d.get("record_activation", True)),
+            apd_level=float(d.get("apd_level", 0.9)),
         )
 
 

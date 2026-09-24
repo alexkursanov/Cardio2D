@@ -75,6 +75,9 @@ def run_simulation(config: SimulationConfig, *, observers=(),
         t_start = 0.0
 
     sim.run(t_start_ms=t_start)
+    # run.json и карты пишет ранг 0; после возврата они должны быть
+    # дописаны для всех рангов (иначе чтение сразу после — гонка)
+    sim.comm.Barrier()
 
     out_dir = Path(config.output.out_dir)
     return RunResult(out_dir=out_dir, manifest_path=out_dir / MANIFEST_NAME,

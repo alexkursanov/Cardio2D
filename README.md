@@ -34,8 +34,8 @@
 | 7 | `solvers/mechanics.py` | готов, 22 | да |
 | 8 | `runtime/` — расписание, наблюдатели, Simulation | готов, 18 + 17 | частично |
 | 9 | `io/` — поля, ряды, чекпоинты, манифест | готов, 20 + 18 | частично |
-| **10а** | `control/` — CLI, API, параметрические серии | **на проверке**, 17 + 8 | частично |
-| 10б | `analysis/` — чтение результатов, биомаркеры | планируется | нет |
+| 10а | `control/` — CLI, API, параметрические серии | готов, 17 + 7 | частично |
+| **10б** | `analysis/` — чтение результатов, биомаркеры; карты активации | **на проверке**, 16 + 6 | нет (расчётные тесты — да) |
 
 ---
 
@@ -58,6 +58,21 @@ python -m cardiac_em status runs/a
 `cardiac_em/control/sweep.py`, пример — `examples/sweep_tmax.json`.
 Прерванную серию достаточно запустить ещё раз: завершённые точки
 пропускаются.
+
+### Анализ результатов (без DOLFINx — хоть на ноутбуке)
+
+```python
+from cardiac_em.analysis import open_run, open_sweep, biomarkers as bm, plots
+
+run = open_run("runs/a")
+maps = run.activation()                         # activation.npz: по узлам и ударам
+cv = bm.conduction_velocity(maps.coords, maps.act[:, 0])      # мм/мс
+apd = bm.apd_summary(maps.apd[:, 0], maps.region)             # APD90 по регионам
+mech = bm.mechanics_summary(run.series())                     # пики T_act, σ_xx, укорочение
+plots.field_map(maps.grid(maps.act[:, 0]), run.meshes["electric"], title="t_act, мс")
+
+rows = open_sweep("runs/sweep_tmax").table(lambda r: bm.mechanics_summary(r.series()))
+```
 
 ### Из Python
 
