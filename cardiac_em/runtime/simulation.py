@@ -1,0 +1,276 @@
+"""
+Связанный расчёт: электрика + механика.
+========================================
+
+`Simulation` собирает всё из `SimulationConfig` и ведёт счёт в два этапа:
+
+    1. ПРЕДНАГРУЗКА — ткань постепенно растягивается вдоль волокон до
+       заданного λ_f, затем все границы зажимаются в достигнутом
+       положении.
+    2. АКТИВАЦИЯ — электрика идёт каждый шаг; на механических шагах
+       активное напряжение переносится на механическую сетку и решается
+       равновесие.
+
+    sim = Simulation(config, observers=[ConsoleObserver()])
+    sim.preload()
+    sim.run()
+
+Никаких глобальных параметров: всё берётся из `config`, поэтому в одном
+процессе можно последовательно выполнить сколько угодно разных
+конфигураций — это основа будущих параметрических серий.
+
+Ни печати, ни записи на диск здесь нет. О ходе счёта оповещаются
+наблюдатели (`runtime/observers.py`); запись полей и чекпоинтов тоже
+будет наблюдателями (шаг 9).
+
+Отличия от монолитной версии
+-----------------------------
+* Преднагрузка идёт с условиями симметрии, а не с точечной связью:
+  точечная связь давала сингулярность напряжения и неоднородное
+  растяжение (λ_f = 1.055…1.108 при заданном 1.1 на сетке 8×8).
+
+* Граничные условия зажима ставятся ОДИН раз после преднагрузки. В
+  монолитной версии они пересоздавались на каждом механическом шаге
+  (с копированием u), что заставляло каждый раз пересобирать объект
+  нелинейной задачи. Граничные узлы при зажиме не двигаются, так что
+  результат тот же, а работы меньше.
+
+* Механика решается в моменты, кратные dt_мех, а не со сдвигом на один
+  электрический шаг (подробнее — `runtime/schedule.py`).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from mpi4py import MPI
+
+from ..config.simulation import SimulationConfig
+from ..coupling import make_transfer
+from ..fem import Tissue, build_mesh_pair
+from ..models.cell import CellModel, make_cell_model
+from ..models.passive import PassiveMaterial
+from ..solvers import (
+    MechanicsSolver,
+    MonodomainSolver,
+    bcs_clamped_at_current_state,
+    bcs_uniaxial_stretch_symmetric,
+)
+from .observers import Observer
+from .schedule import Schedule
+
+__all__ = ["Simulation"]
+
+
+class Simulation:
+    """
+    Связанная электромеханическая задача.
+
+    Параметры
+    ---------
+    config : SimulationConfig
+    cell_model : CellModel, optional
+        По умолчанию — Роджерс–МакКаллох. (В конфигурацию выбор модели
+        клетки пока не вынесен — это следующий шаг вместе с манифестом.)
+    material : PassiveMaterial, optional
+        По умолчанию — трансверсально-изотропный экспоненциальный.
+    transfer_strategy : "auto" | "averaging" | "nearest"
+        Как переносить T_act на механическую сетку (см. `coupling/`).
+    observers : последовательность Observer
+    comm : MPI.Comm, optional
+    """
+
+    def __init__(self, config: SimulationConfig, *,
+                 cell_model: CellModel | None = None,
+                 material: PassiveMaterial | None = None,
+                 transfer_strategy: str = "auto",
+                 observers: tuple[Observer, ...] = (),
+                 comm: MPI.Comm | None = None):
+        self.config = config
+        self.comm = MPI.COMM_WORLD if comm is None else comm
+        self.observers = list(observers)
+
+        # ── сетки и ткань ─────────────────────────────────────────────
+        self.pair = build_mesh_pair(config.mesh, self.comm)
+        regions = tuple(config.regions)
+        self.tissue_e = Tissue.for_electrics(
+            self.pair.electric, config.tissue_base, regions)
+        self.tissue_m = Tissue.for_mechanics(
+            self.pair.mechanical, config.tissue_base, regions)
+
+        # ── солверы и связь ───────────────────────────────────────────
+        self.cell_model = cell_model or make_cell_model("rogers_mcculloch")
+        self.electrics = MonodomainSolver(
+            self.tissue_e, self.cell_model, config.stimulus)
+        self.mechanics = MechanicsSolver(self.tissue_m, material)
+        self.transfer = make_transfer(
+            self.tissue_e.DG0, self.tissue_m.DG0,
+            config.mesh.electric, config.mesh.mechanical,
+            strategy=transfer_strategy)
+
+        # ── состояние хода счёта ──────────────────────────────────────
+        self.t_ms = 0.0
+        self.is_preloaded = False
+        self.last_newton_iterations = 0
+
+        self._area_e = config.mesh.electric.hx_mm * config.mesh.electric.hy_mm
+        self._area_m = config.mesh.mechanical.hx_mm * config.mesh.mechanical.hy_mm
+        if config.mesh.electric.cell_type == "triangle":
+            self._area_e /= 2
+        if config.mesh.mechanical.cell_type == "triangle":
+            self._area_m /= 2
+
+        self.warnings = self._collect_warnings()
+
+    # ── предупреждения при старте ─────────────────────────────────────
+    def _collect_warnings(self) -> list[str]:
+        """
+        Всё подозрительное, что можно обнаружить до начала счёта.
+        Считается на всех рангах (есть коллективные операции).
+        """
+        found = list(self.config.check())
+
+        for label, tissue in (("электрической", self.tissue_e),
+                              ("механической", self.tissue_m)):
+            for i in tissue.empty_regions():
+                name = self.config.regions[i].name or f"#{i}"
+                found.append(
+                    f"регион {name} не покрыл ни одной ячейки {label} сетки — "
+                    f"он мельче её шага")
+
+        if not self.transfer.exact:
+            found.append(
+                f"перенос T_act на механическую сетку приближённый "
+                f"({self.transfer.describe()})")
+        return found
+
+    # ── оповещение наблюдателей ───────────────────────────────────────
+    def _notify(self, method: str, *args) -> None:
+        for obs in self.observers:
+            getattr(obs, method)(self, *args)
+
+    def add_observer(self, observer: Observer) -> None:
+        self.observers.append(observer)
+
+    # ── этап 1: преднагрузка ──────────────────────────────────────────
+    def preload(self) -> None:
+        """
+        Постепенное растяжение до λ_f = config.preload.stretch и зажим
+        границ в достигнутом положении.
+
+        При λ_f = 1 растягивать нечего: границы зажимаются сразу.
+        """
+        if self.is_preloaded:
+            raise RuntimeError("преднагрузка уже выполнена")
+
+        spec = self.config.mesh.mechanical
+        p = self.config.preload
+        self.mechanics.clear_active_tension()
+
+        if not p.is_trivial:
+            delta_total = (p.stretch - 1.0) * spec.lx_mm
+            for k in range(1, p.n_steps + 1):
+                delta = delta_total * k / p.n_steps
+                self.mechanics.set_bcs(
+                    bcs_uniaxial_stretch_symmetric(self.mechanics, spec, delta))
+                self.last_newton_iterations = self.mechanics.solve_or_raise()
+                self._notify("on_preload_step", k, p.n_steps)
+
+        self.mechanics.set_bcs(
+            bcs_clamped_at_current_state(self.mechanics, spec))
+        self.last_newton_iterations = self.mechanics.solve_or_raise()
+        self.is_preloaded = True
+        self._notify("on_preload_done")
+
+    # ── этап 2: активация ─────────────────────────────────────────────
+    def run(self, t_start_ms: float = 0.0) -> Schedule:
+        """
+        Связанный расчёт от t_start до config.time.t_end_ms.
+
+        `t_start_ms` отличен от нуля при продолжении с чекпоинта; состояние
+        к этому моменту должно быть уже загружено (шаг 9).
+        """
+        if not self.is_preloaded:
+            raise RuntimeError(
+                "перед run() нужна преднагрузка: вызовите preload() "
+                "(или загрузите состояние из чекпоинта)")
+
+        schedule = Schedule(self.config.time, self.config.output, t_start_ms)
+        self.t_ms = schedule.t_start_ms
+        self._notify("on_start", schedule)
+
+        dt = schedule.dt
+        for tick in schedule:
+            self.electrics.step(tick.t_ms, dt)
+            if tick.is_mech:
+                self._couple_and_solve()
+                self.t_ms = tick.t_end_ms
+                self._notify("on_mech_tick", tick)
+
+        self._notify("on_finish")
+        return schedule
+
+    def _couple_and_solve(self) -> None:
+        """T_act с электрической сетки → на механическую → равновесие."""
+        t_act_e = self.electrics.active_tension_dg0()
+        t_act_m = self.transfer.apply(t_act_e)
+        self.mechanics.set_active_tension(t_act_m)
+        self.last_newton_iterations = self.mechanics.solve_or_raise()
+
+    # ── диагностика ───────────────────────────────────────────────────
+    def diagnostics(self, electric: bool = True) -> dict:
+        """
+        Сводка текущего состояния — глобальные величины по всем рангам.
+
+        КОЛЛЕКТИВНАЯ операция: вызывать на всех рангах одновременно.
+
+        Интегралы T_act по области нужны для контроля связи: при точном
+        переносе они на двух сетках совпадают, и расхождение сразу
+        покажет, что перенос сломан.
+        """
+        m = self.mechanics
+        lam_lo, lam_hi = m.value_range(m.fiber_stretch())
+        J_lo, J_hi = m.value_range(m.jacobian_determinant())
+        s_lo, s_hi = m.value_range(m.cauchy_stress(0, 0))
+
+        t_m = m.T_act.x.array[:m.n_cells_owned]
+        d = {
+            "t_ms": self.t_ms,
+            "lambda_f_min": lam_lo, "lambda_f_max": lam_hi,
+            "J_min": J_lo, "J_max": J_hi,
+            "sigma_xx_min": s_lo, "sigma_xx_max": s_hi,
+            "t_act_mech_max": self._gmax(t_m),
+            "t_act_mech_integral": self._gsum(t_m) * self._area_m,
+            "newton_iterations": int(self.last_newton_iterations),
+        }
+
+        if electric:
+            u_lo, u_hi = self.electrics.potential_range()
+            t_e = self.electrics.active_tension_dg0()
+            d.update({
+                "u_min": u_lo, "u_max": u_hi,
+                "t_act_electric_max": self._gmax(t_e),
+                "t_act_electric_integral": self._gsum(t_e) * self._area_e,
+            })
+        else:
+            d.update({"u_min": None, "u_max": None,
+                      "t_act_electric_max": None,
+                      "t_act_electric_integral": None})
+        return d
+
+    def _gmax(self, arr: np.ndarray) -> float:
+        local = float(arr.max()) if arr.size else -np.inf
+        return self.comm.allreduce(local, op=MPI.MAX)
+
+    def _gsum(self, arr: np.ndarray) -> float:
+        return self.comm.allreduce(float(arr.sum()), op=MPI.SUM)
+
+    def summary(self) -> str:
+        lines = [
+            self.pair.summary(),
+            self.electrics.summary(),
+            self.mechanics.summary(),
+            f"  Перенос T_act: {self.transfer.describe()}",
+        ]
+        for w in self.warnings:
+            lines.append(f"  [!] {w}")
+        return "\n".join(lines)

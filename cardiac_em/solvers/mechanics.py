@@ -131,6 +131,7 @@ class MechanicsSolver:
         self._bcs_dirty = True
         self._problem = None
         self._options = dict(petsc_options or self._DEFAULT_OPTIONS)
+        self._post_cache: dict[str, tuple] = {}
 
         self._build_forms()
 
@@ -211,8 +212,23 @@ class MechanicsSolver:
 
     # ── постобработка ─────────────────────────────────────────────────
     def _interpolate_dg0(self, expr_ufl, name: str) -> fem.Function:
-        expr = fem.Expression(expr_ufl, self.DG0.element.interpolation_points)
-        fn = fem.Function(self.DG0, name=name)
+        """
+        Интерполировать выражение на DG0.
+
+        Скомпилированное выражение и функция-приёмник кэшируются по имени:
+        выражения ссылаются на `u` и `T_act`, чьи значения меняются, так
+        что компиляция нужна один раз на весь расчёт.
+
+        СЛЕДСТВИЕ: повторный вызов возвращает ТУ ЖЕ функцию, обновлённую
+        на месте. Если нужны значения на конкретный момент — скопируйте
+        массив (`fn.x.array.copy()`), а не держите ссылку на функцию.
+        """
+        cached = self._post_cache.get(name)
+        if cached is None:
+            expr = fem.Expression(expr_ufl, self.DG0.element.interpolation_points)
+            fn = fem.Function(self.DG0, name=name)
+            cached = self._post_cache[name] = (expr, fn)
+        expr, fn = cached
         fn.interpolate(expr)
         return fn
 

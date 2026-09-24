@@ -116,6 +116,13 @@ class MonodomainSolver:
         self.v_fn = fem.Function(self.P1, name="u_ap")     # потенциал
         self._act_p1 = fem.Function(self.P1)                # сигнал активации
         self._t_act = fem.Function(self.DG0, name="T_act_kPa")
+        # Выражение P1 → DG0 компилируется ОДИН раз. Оно ссылается на
+        # функцию `_act_p1`, чьи значения меняются, поэтому скомпилированный
+        # объект годится на весь расчёт. Создавать его на каждом вызове
+        # значит на каждом механическом шаге хэшировать форму и загружать
+        # модуль из кэша FFCx.
+        self._act_expr = fem.Expression(
+            self._act_p1, self.DG0.element.interpolation_points)
         self._sync_potential_to_function()
 
         # ── пространственный профиль стимула ──────────────────────────
@@ -251,9 +258,7 @@ class MonodomainSolver:
         self._act_p1.x.array[:self.n_local] = act
         self._act_p1.x.scatter_forward()
 
-        expr = fem.Expression(self._act_p1,
-                              self.DG0.element.interpolation_points)
-        self._t_act.interpolate(expr)
+        self._t_act.interpolate(self._act_expr)
 
         n_cells = self.DG0.dofmap.index_map.size_local
         values = self._t_act.x.array[:n_cells]
