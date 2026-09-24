@@ -150,6 +150,21 @@ class SimulationConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     restart: RestartConfig = field(default_factory=RestartConfig)
 
+    # Выбор моделей — по ИМЕНИ из реестров `models/cell` и
+    # `models/passive`. Имена, а не объекты: конфигурация обязана
+    # сериализоваться, и прогон по сохранённому run.json должен собрать
+    # ту же физику. Проверка имени — при сборке `Simulation` (config/ не
+    # знает о реестрах: он лежит ниже слоя моделей).
+    cell_model: str = "rogers_mcculloch"
+    passive_material: str = "transversely_isotropic_exponential"
+
+    def __post_init__(self) -> None:
+        for label, value in (("cell_model", self.cell_model),
+                             ("passive_material", self.passive_material)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label} должен быть непустым именем модели, "
+                                 f"получено {value!r}")
+
     # ── удобные конструкторы ──────────────────────────────────────────
     @staticmethod
     def default(nx_electric: int = 40, coarsening: int = 2) -> "SimulationConfig":
@@ -254,6 +269,8 @@ class SimulationConfig:
             "preload": self.preload.to_dict(),
             "output": self.output.to_dict(),
             "restart": self.restart.to_dict(),
+            "cell_model": self.cell_model,
+            "passive_material": self.passive_material,
         }
 
     @staticmethod
@@ -267,6 +284,9 @@ class SimulationConfig:
             preload=PreloadProtocol.from_dict(d.get("preload", {})),
             output=OutputConfig.from_dict(d.get("output", {})),
             restart=RestartConfig.from_dict(d.get("restart", {})),
+            cell_model=d.get("cell_model", "rogers_mcculloch"),
+            passive_material=d.get("passive_material",
+                                   "transversely_isotropic_exponential"),
         )
 
     def to_json(self, path, skip_unserializable: bool = False) -> None:
@@ -286,6 +306,8 @@ class SimulationConfig:
         flat = self.tissue_base.to_flat_dict()
         lines = [
             self.mesh.summary(),
+            f"  Модели       : клетка {self.cell_model}, "
+            f"материал {self.passive_material}",
             f"  Шаги         : dt_эл = {self.time.dt_electric_ms} мс, "
             f"dt_мех = {self.time.dt_mech_ms:g} мс, "
             f"t_end = {self.time.t_end_ms} мс",

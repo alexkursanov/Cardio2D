@@ -20,8 +20,13 @@
 конфигураций — это основа будущих параметрических серий.
 
 Ни печати, ни записи на диск здесь нет. О ходе счёта оповещаются
-наблюдатели (`runtime/observers.py`); запись полей и чекпоинтов тоже
-будет наблюдателями (шаг 9).
+наблюдатели (`runtime/observers.py`); запись полей, чекпоинтов и
+манифеста — тоже наблюдатели, из слоя `io/`.
+
+Продолжение с чекпоинта: вместо `preload()` —
+
+    info = io.restore_checkpoint(sim, "old/ckpt_last.npz")
+    sim.run(t_start_ms=info.t_start_ms)
 
 Отличия от монолитной версии
 -----------------------------
@@ -48,7 +53,7 @@ from ..config.simulation import SimulationConfig
 from ..coupling import make_transfer
 from ..fem import Tissue, build_mesh_pair
 from ..models.cell import CellModel, make_cell_model
-from ..models.passive import PassiveMaterial
+from ..models.passive import PassiveMaterial, make_passive_material
 from ..solvers import (
     MechanicsSolver,
     MonodomainSolver,
@@ -69,10 +74,12 @@ class Simulation:
     ---------
     config : SimulationConfig
     cell_model : CellModel, optional
-        По умолчанию — Роджерс–МакКаллох. (В конфигурацию выбор модели
-        клетки пока не вынесен — это следующий шаг вместе с манифестом.)
+        Готовый объект модели клетки вместо `config.cell_model`. Нужен,
+        когда модель создаётся с нестандартными аргументами. Если её имя
+        расходится с конфигурацией — предупреждение: в run.json попадёт
+        имя из конфигурации, и повторный прогон соберёт другую физику.
     material : PassiveMaterial, optional
-        По умолчанию — трансверсально-изотропный экспоненциальный.
+        То же для `config.passive_material`.
     transfer_strategy : "auto" | "averaging" | "nearest"
         Как переносить T_act на механическую сетку (см. `coupling/`).
     observers : последовательность Observer
@@ -98,7 +105,23 @@ class Simulation:
             self.pair.mechanical, config.tissue_base, regions)
 
         # ── солверы и связь ───────────────────────────────────────────
-        self.cell_model = cell_model or make_cell_model("rogers_mcculloch")
+        self._explicit_models = []
+        if cell_model is None:
+            cell_model = make_cell_model(config.cell_model)
+        elif cell_model.name != config.cell_model:
+            self._explicit_models.append(
+                f"модель клетки {cell_model.name!r} передана объектом, а в "
+                f"конфигурации указана {config.cell_model!r} — сохранённая "
+                f"конфигурация не воспроизведёт этот прогон")
+        if material is None:
+            material = make_passive_material(config.passive_material)
+        elif material.name != config.passive_material:
+            self._explicit_models.append(
+                f"материал {material.name!r} передан объектом, а в "
+                f"конфигурации указан {config.passive_material!r} — "
+                f"сохранённая конфигурация не воспроизведёт этот прогон")
+
+        self.cell_model = cell_model
         self.electrics = MonodomainSolver(
             self.tissue_e, self.cell_model, config.stimulus)
         self.mechanics = MechanicsSolver(self.tissue_m, material)
@@ -111,6 +134,9 @@ class Simulation:
         self.t_ms = 0.0
         self.is_preloaded = False
         self.last_newton_iterations = 0
+        # Заполняется io.restore_checkpoint: откуда взято состояние.
+        # Попадает в манифест. None — счёт с нуля.
+        self.restart_info: dict | None = None
 
         self._area_e = config.mesh.electric.hx_mm * config.mesh.electric.hy_mm
         self._area_m = config.mesh.mechanical.hx_mm * config.mesh.mechanical.hy_mm
@@ -128,6 +154,7 @@ class Simulation:
         Считается на всех рангах (есть коллективные операции).
         """
         found = list(self.config.check())
+        found.extend(self._explicit_models)
 
         for label, tissue in (("электрической", self.tissue_e),
                               ("механической", self.tissue_m)):
@@ -181,6 +208,29 @@ class Simulation:
         self.is_preloaded = True
         self._notify("on_preload_done")
 
+    def resume(self, t_ms: float) -> None:
+        """
+        Принять ТЕКУЩЕЕ состояние солверов (обычно только что загруженное
+        из чекпоинта) как стартовое на момент `t_ms` вместо преднагрузки.
+
+        Границы зажимаются там, где стоит загруженное u; T_act
+        пересчитывается из загруженного электрического состояния и
+        переносится на механику; равновесие решается заново. Если
+        чекпоинт снят этим же кодом с той же конфигурацией, состояние
+        уже равновесное и Ньютон сходится за 0–1 итерацию. Если сетка
+        или параметры другие — решение приводит u к равновесию для
+        текущей конфигурации.
+        """
+        if self.is_preloaded:
+            raise RuntimeError(
+                "состояние уже подготовлено (preload или resume) — "
+                "resume нужно вызывать на свежесобранной Simulation")
+        spec = self.config.mesh.mechanical
+        self.mechanics.set_bcs(bcs_clamped_at_current_state(self.mechanics, spec))
+        self._couple_and_solve()
+        self.t_ms = float(t_ms)
+        self.is_preloaded = True
+
     # ── этап 2: активация ─────────────────────────────────────────────
     def run(self, t_start_ms: float = 0.0) -> Schedule:
         """
@@ -199,12 +249,22 @@ class Simulation:
         self._notify("on_start", schedule)
 
         dt = schedule.dt
-        for tick in schedule:
-            self.electrics.step(tick.t_ms, dt)
-            if tick.is_mech:
-                self._couple_and_solve()
-                self.t_ms = tick.t_end_ms
-                self._notify("on_mech_tick", tick)
+        try:
+            for tick in schedule:
+                self.electrics.step(tick.t_ms, dt)
+                if tick.is_mech:
+                    self._couple_and_solve()
+                    self.t_ms = tick.t_end_ms
+                    self._notify("on_mech_tick", tick)
+        except BaseException as exc:
+            # Наблюдатели узнают о сбое (манифест помечает прогон как
+            # failed, файлы закрываются), после чего ошибка идёт дальше.
+            for obs in self.observers:
+                try:
+                    obs.on_abort(self, exc)
+                except Exception:  # noqa: BLE001 — не заслонять исходную ошибку
+                    pass
+            raise
 
         self._notify("on_finish")
         return schedule

@@ -54,6 +54,10 @@ from .mesh import dof_coordinates
 
 __all__ = ["Tissue"]
 
+# Точность, до которой округляются координаты при отнесении точек к
+# регионам (знаков после запятой, в мм). См. Tissue._region_ids.
+_COORD_DECIMALS = 10
+
 
 # Параметры, которые нужны ПОТОЧЕЧНО на узлах P1 (явный шаг реакции).
 _P1_KEYS = ("AP_c1", "AP_c2", "AP_a", "AP_b", "AP_d")
@@ -155,10 +159,21 @@ class Tissue:
     @staticmethod
     def _region_ids(xy: np.ndarray,
                     regions: tuple[RegionSpec, ...]) -> np.ndarray:
+        """
+        Номер региона для каждой точки.
+
+        Координаты перед проверкой ОКРУГЛЯЮТСЯ до 1e-10 мм. У DOLFINx
+        узлы несут шум округления (y = 2.0000000000000004 вместо 2.0), и
+        без округления регион с границей ровно по краю области [0, 2]
+        терял бы отдельные граничные узлы — параметры в них молча
+        оставались бы базовыми. Найдено тестом снимков на шаге 9.
+        Разрешение 1e-10 мм на порядки мельче любого шага сетки.
+        """
         rid = np.full(len(xy), -1, dtype=np.int64)
         if len(xy) == 0:
             return rid
-        x, y = xy[:, 0], xy[:, 1]
+        xr = np.round(np.asarray(xy, dtype=np.float64), _COORD_DECIMALS)
+        x, y = xr[:, 0] + 0.0, xr[:, 1] + 0.0          # −0.0 → 0.0
         for i, region in enumerate(regions):
             rid[region.contains(x, y)] = i
         return rid

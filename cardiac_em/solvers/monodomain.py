@@ -241,6 +241,23 @@ class MonodomainSolver:
         self.v_fn.x.array[:self.n_owned] = new
         self.v_fn.x.scatter_forward()
 
+    def load_state(self, state_local: np.ndarray) -> None:
+        """
+        Заменить состояние клеток целиком — на ВСЕХ локальных узлах,
+        включая гало, (n_local, n_states). Используется при
+        восстановлении из чекпоинта: сопоставление там идёт по
+        координатам, и гало получают те же значения, что их владельцы.
+        """
+        arr = np.asarray(state_local, dtype=np.float64)
+        expected = (self.n_local, self.cell.n_states)
+        if arr.shape != expected:
+            raise ValueError(
+                f"состояние формы {arr.shape}, ожидалось {expected} "
+                f"(узлы × переменные модели {self.cell.name})")
+        self.state = arr.copy()
+        self._sync_potential_to_function()
+        self.v_fn.x.scatter_forward()
+
     # ── наблюдаемые величины ──────────────────────────────────────────
     def potential(self) -> np.ndarray:
         """Потенциал на локальных узлах (включая гало)."""

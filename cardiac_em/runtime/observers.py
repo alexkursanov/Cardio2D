@@ -53,6 +53,17 @@ class Observer:
     def on_finish(self, sim: "Simulation") -> None:
         """После последнего тика."""
 
+    def on_abort(self, sim: "Simulation", exc: BaseException) -> None:
+        """
+        Счёт прерван исключением (несходимость, Ctrl+C, …). После этого
+        исключение пробрасывается дальше.
+
+        ЗДЕСЬ НЕЛЬЗЯ делать коллективных операций MPI: ошибка могла
+        случиться не на всех рангах, и коллективный вызов зависнет.
+        Только локальные действия — закрыть файл, записать статус с
+        нулевого ранга.
+        """
+
 
 class ConsoleObserver(Observer):
     """
@@ -105,6 +116,10 @@ class ConsoleObserver(Observer):
     def on_finish(self, sim):
         elapsed = time.perf_counter() - (self._t0 or time.perf_counter())
         self._print(sim, f"  готово за {elapsed:.1f} с")
+
+    def on_abort(self, sim, exc):
+        self._print(sim, f"  [прервано на t = {sim.t_ms:g} мс] "
+                         f"{type(exc).__name__}: {exc}")
 
 
 class TraceObserver(Observer):

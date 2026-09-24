@@ -1,5 +1,5 @@
 """
-Тесты слоя конфигурации.
+Тесты слоя конфигурации (Шаг 1).
 =================================
 
 DOLFINx не требуется — можно запускать где угодно.
@@ -443,6 +443,31 @@ def test_summary_renders():
 # ═══════════════════════════════════════════════════════════════════════
 #  ЗАПУСК БЕЗ PYTEST
 # ═══════════════════════════════════════════════════════════════════════
+
+def test_model_names_roundtrip():
+    """Выбор моделей — часть конфигурации: иначе run.json не воспроизводит прогон."""
+    cfg = SimulationConfig.default()
+    assert cfg.cell_model == "rogers_mcculloch"
+    assert cfg.passive_material == "transversely_isotropic_exponential"
+    cfg.cell_model = "tnnpm"
+    back = SimulationConfig.from_dict(json.loads(json.dumps(cfg.to_dict())))
+    assert back.cell_model == "tnnpm"
+    assert "tnnpm" in back.summary()
+
+
+def test_old_config_without_model_names_gets_defaults():
+    """Конфиги, сохранённые до шага 9, читаются как раньше."""
+    d = SimulationConfig.default().to_dict()
+    del d["cell_model"], d["passive_material"]
+    cfg = SimulationConfig.from_dict(d)
+    assert cfg.cell_model == "rogers_mcculloch"
+
+
+def test_empty_model_name_rejected():
+    mesh = SimulationConfig.default().mesh
+    _raises(ValueError, SimulationConfig, mesh=mesh, cell_model="")
+    _raises(ValueError, SimulationConfig, mesh=mesh, passive_material="  ")
+
 
 def _main() -> int:
     tests = [(name, obj) for name, obj in sorted(globals().items())

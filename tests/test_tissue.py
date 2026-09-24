@@ -118,6 +118,32 @@ def test_rect_region_overrides_inside_only():
     np.testing.assert_allclose(t_max[~inside], 120.0)
 
 
+def test_region_up_to_domain_edge_keeps_every_boundary_node():
+    """
+    Регион, чья граница совпадает с краем области, обязан включать ВСЕ
+    граничные узлы. На сетке 24×8 на 6×2 мм у DOLFINx узел (0, 2) имеет
+    y = 2.0000000000000004 и без округления выпадал из региона
+    y ∈ [0, 2] (найдено тестом снимков на шаге 9).
+    """
+    from cardiac_em.fem import Tissue, build_mesh
+
+    mesh = build_mesh(RectangleMeshSpec(nx=24, ny=8, lx_mm=6.0, ly_mm=2.0))
+    whole = RectRegion(x0=0.0, x1=6.0, y0=0.0, y1=2.0, name="всё",
+                       overrides={"T_MAX": 90.0})
+    left = RectRegion(x0=0.0, x1=3.0, y0=0.0, y1=2.0, name="левая половина",
+                      overrides={"T_MAX": 60.0})
+
+    t_whole = Tissue.for_electrics(mesh, TissueBaseParams(), (whole,))
+    assert (t_whole.region_id_p1 == 0).all(), "узел на краю выпал из региона"
+    assert (t_whole.region_id_dg0 == 0).all()
+
+    t_left = Tissue.for_electrics(mesh, TissueBaseParams(), (left,))
+    xy = _owned_xy(t_left.P1)
+    n = len(xy)
+    expected = np.where(xy[:, 0] <= 3.0 + 1e-9, 0, -1)
+    np.testing.assert_array_equal(t_left.region_id_p1[:n], expected)
+
+
 def test_unoverridden_params_keep_base_inside_region():
     """Регион меняет только перечисленное, остальное остаётся базовым."""
     from cardiac_em.fem import Tissue, build_mesh
