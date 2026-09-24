@@ -202,6 +202,36 @@ cfg.to_json("examples/my_run.json")     # конфиг — сериализуе�
 
 ---
 
+## Ноутбуки
+
+В `notebooks/` — четыре ноутбука, открываются в VS Code (или Jupyter):
+
+| Файл | Что делает | DOLFINx |
+|------|------------|---------|
+| `01_run.ipynb` | конфигурация из примера, проверка, расчёт в ядре; команды для MPI; продолжение с чекпоинта; серия по параметрам ишемии | нужен для счёта |
+| `02_tests.ipynb` | окружение, лёгкие тесты, FEM-тесты, тесты под MPI, сводная таблица | для FEM/MPI |
+| `03_analysis.ipynb` | паспорт прогона, биомаркеры: ряды, удары, CV, APD по регионам, блок, реституция, серия; экспорт CSV/JSON в `runs/<имя>/analysis/` | нет |
+| `04_visualization.ipynb` | ряды, карты активации с изохронами, APD, CV, снимки потенциала, механика на деформированной сетке, анимация, серия; PNG в `runs/<имя>/figures/` | нет |
+
+Общие помощники — `notebooks/nbtools.py` (запуск команд с выводом по ходу,
+pytest со сводкой, список прогонов, стиль графиков).
+
+```bash
+conda activate fenicsx-env
+pip install -e ".[notebooks]"
+python -m ipykernel install --user --name fenicsx-env --display-name "Python 3 (fenicsx-env)"
+```
+
+В VS Code: расширения Python и Jupyter, открыть ноутбук → **Select Kernel** →
+«Python 3 (fenicsx-env)». При работе по SSH (Remote-SSH) ядро выбирается
+на сервере. Счёт под MPI ноутбук не ведёт в своём процессе — он собирает
+команду `mpirun … python -m cardiac_em run` и запускает её отдельным
+процессом (флаги `RUN_MPI`, `RUN_SWEEP_MPI`). Прогоны пишутся в `runs/`
+(в `.gitignore`); ноутбуки 03/04 по умолчанию читают `runs/nb_quick` и
+`runs/nb_quick_sweep`, созданные 01.
+
+---
+
 ## Тесты
 
 ```bash
@@ -246,6 +276,7 @@ cardiac_em/
   control/     запуск: CLI, серии, будущий API
   analysis/    постобработка; читает только файлы             (без DOLFINx)
 tests/         тесты по шагам
+notebooks/     расчёт, тесты, анализ, визуализация в .ipynb
 examples/      примеры конфигураций и областей
 ```
 

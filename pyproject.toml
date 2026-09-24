@@ -48,6 +48,13 @@ analysis = [
     "pandas>=2.0",
     "matplotlib>=3.7",
 ]
+# Ноутбуки notebooks/*.ipynb (VS Code / Jupyter): ядро + анализ.
+notebooks = [
+    "ipykernel>=6.0",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+]
 dev = [
     "pytest>=7.0",
     "ruff>=0.4",
