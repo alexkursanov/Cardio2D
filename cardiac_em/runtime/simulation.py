@@ -96,15 +96,7 @@ class Simulation:
         self.comm = MPI.COMM_WORLD if comm is None else comm
         self.observers = list(observers)
 
-        # ── сетки и ткань ─────────────────────────────────────────────
-        self.pair = build_mesh_pair(config.mesh, self.comm)
-        regions = tuple(config.regions)
-        self.tissue_e = Tissue.for_electrics(
-            self.pair.electric, config.tissue_base, regions)
-        self.tissue_m = Tissue.for_mechanics(
-            self.pair.mechanical, config.tissue_base, regions)
-
-        # ── солверы и связь ───────────────────────────────────────────
+        # ── модели (до ткани: ткани нужны параметры модели клетки) ────
         self._explicit_models = []
         if cell_model is None:
             cell_model = make_cell_model(config.cell_model)
@@ -122,6 +114,25 @@ class Simulation:
                 f"сохранённая конфигурация не воспроизведёт этот прогон")
 
         self.cell_model = cell_model
+
+        cell_params = dict(cell_model.default_params())
+        unknown = set(config.cell_params) - set(cell_params)
+        if unknown:
+            raise KeyError(
+                f"config.cell_params: у модели {cell_model.name!r} нет параметров "
+                f"{sorted(unknown)}; есть: {sorted(cell_params) or 'ни одного'}")
+        cell_params.update(config.cell_params)
+
+        # ── сетки и ткань ─────────────────────────────────────────────
+        self.pair = build_mesh_pair(config.mesh, self.comm)
+        regions = tuple(config.regions)
+        self.tissue_e = Tissue.for_electrics(
+            self.pair.electric, config.tissue_base, regions,
+            cell_params=cell_params)
+        self.tissue_m = Tissue.for_mechanics(
+            self.pair.mechanical, config.tissue_base, regions)
+
+        # ── солверы и связь ───────────────────────────────────────────
         self.electrics = MonodomainSolver(
             self.tissue_e, self.cell_model, config.stimulus)
         self.mechanics = MechanicsSolver(self.tissue_m, material)
@@ -181,7 +192,8 @@ class Simulation:
     # ── этап 1: преднагрузка ──────────────────────────────────────────
     def preload(self) -> None:
         """
-        Постепенное растяжение до λ_f = config.preload.stretch и зажим
+        Подготовка клеток (если задана `preload.cell_relax_ms`), затем
+        постепенное растяжение до λ_f = config.preload.stretch и зажим
         границ в достигнутом положении.
 
         При λ_f = 1 растягивать нечего: границы зажимаются сразу.
@@ -191,6 +203,10 @@ class Simulation:
 
         spec = self.config.mesh.mechanical
         p = self.config.preload
+        if p.cell_relax_ms > 0:
+            # До растяжения: клетки приходят к своему покою (регионы с
+            # другими параметрами — к своему). См. PreloadProtocol.
+            self.electrics.relax(p.cell_relax_ms, self.config.time.dt_electric_ms)
         self.mechanics.clear_active_tension()
 
         if not p.is_trivial:

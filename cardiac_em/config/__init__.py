@@ -43,6 +43,7 @@ from .simulation import (
     SimulationConfig,
 )
 from .tissue_spec import (
+    CELL_PREFIX,
     ActiveStressParams,
     CircleRegion,
     ConductionParams,
@@ -63,7 +64,7 @@ __all__ = [
     "ReactionParams", "ConductionParams", "ActiveStressParams",
     "PassiveMechParams", "TissueBaseParams",
     # области
-    "RegionSpec", "RectRegion", "CircleRegion", "CustomRegion",
+    "RegionSpec", "RectRegion", "CircleRegion", "CustomRegion", "CELL_PREFIX",
     "region_from_dict", "load_regions_json",
     # протоколы
     "StimulusProtocol", "TimeStepping", "PreloadProtocol",

@@ -73,6 +73,10 @@ class CellModel(ABC):
                      активированным — для карт времён активации. Для
                      безразмерных моделей 0.5; модели в мВ задают своё
                      (например, −40 мВ)
+    potential_clip : пределы, в которые монодомен обрезает потенциал после
+                     шага диффузии (подавление выбросов Кранка–Николсона на
+                     крутом фронте); None — не обрезать. Смысл имеет только
+                     для безразмерных моделей с известным диапазоном
     """
 
     name: str = "abstract"
@@ -84,6 +88,7 @@ class CellModel(ABC):
     state_bounds: dict[int, tuple[float, float]] = {}
     suggested_dt_ms: float = 0.05
     activation_threshold: float = 0.5
+    potential_clip: tuple[float, float] | None = None
 
     # ── размеры и начальное состояние ─────────────────────────────────
     @property
@@ -98,6 +103,15 @@ class CellModel(ABC):
     @abstractmethod
     def resting_state(self) -> np.ndarray:
         """Состояние покоя одной клетки, (n_states,)."""
+
+    def default_params(self) -> dict[str, float]:
+        """
+        Значения по умолчанию для параметров, задаваемых по узлам через
+        `config.cell_params` и ключи регионов "cell:<имя>". Пусто — модель
+        таких параметров не имеет (её `param_names` берутся из
+        TissueBaseParams, как у модели Роджерса–МакКаллоха).
+        """
+        return {}
 
     def initial_state(self, n_nodes: int) -> np.ndarray:
         """Состояние покоя, размноженное по узлам, (n_nodes, n_states)."""

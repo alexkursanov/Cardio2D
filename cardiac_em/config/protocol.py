@@ -189,16 +189,29 @@ class PreloadProtocol:
 
     `stretch` — целевое λ_f, `n_steps` — число шагов нагружения
     (растяжение подаётся постепенно, иначе Ньютон не сходится).
+
+    `cell_relax_ms` — сколько миллисекунд ДО растяжения считать
+    электрику без стимула (с диффузией), чтобы ткань пришла к СВОЕМУ
+    покою, включая пограничную зону. Все узлы стартуют из покоя модели с параметрами по
+    умолчанию; в ишемической зоне (повышенный K_o, открытые K_ATP)
+    собственный покой другой (у TNNPM при K_o = 9.4 мМ около −71.6 мВ
+    вместо −85.9, инактивация Na-канала устанавливается ~200 мс). Без
+    подготовки первый удар шёл бы по ткани, в которой ишемия «включилась»
+    одновременно со стимулом. Для TNNPM с региональной ишемией разумно
+    300 мс и больше; 0 — не готовить (как раньше).
     """
 
     stretch: float = 1.2575
     n_steps: int = 10
+    cell_relax_ms: float = 0.0
 
     def __post_init__(self) -> None:
         if self.stretch <= 0:
             raise ValueError(f"stretch должен быть > 0, получено {self.stretch}")
         if self.n_steps < 1:
             raise ValueError(f"n_steps должен быть >= 1, получено {self.n_steps}")
+        if self.cell_relax_ms < 0:
+            raise ValueError(f"cell_relax_ms не может быть < 0, получено {self.cell_relax_ms}")
 
     @property
     def is_trivial(self) -> bool:
@@ -206,11 +219,13 @@ class PreloadProtocol:
         return abs(self.stretch - 1.0) < 1e-12
 
     def to_dict(self) -> dict:
-        return {"stretch": self.stretch, "n_steps": self.n_steps}
+        return {"stretch": self.stretch, "n_steps": self.n_steps,
+                "cell_relax_ms": self.cell_relax_ms}
 
     @staticmethod
     def from_dict(d: dict) -> "PreloadProtocol":
         return PreloadProtocol(
             stretch=float(d.get("stretch", 1.2575)),
             n_steps=int(d.get("n_steps", 10)),
+            cell_relax_ms=float(d.get("cell_relax_ms", 0.0)),
         )

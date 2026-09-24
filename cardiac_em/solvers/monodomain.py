@@ -73,17 +73,19 @@ class MonodomainSolver:
     theta : float
         Вес неявной части: 0.5 — Кранк–Николсон (по умолчанию),
         1.0 — полностью неявная схема.
-    clip_after_diffusion : tuple | None
+    clip_after_diffusion : tuple | None | "model"
         Ограничение на потенциал после шага диффузии. Схема Кранка–
         Николсона с согласованной матрицей масс не удовлетворяет
         дискретному принципу максимума, и на крутом фронте возможен
-        небольшой выброс. Значение по умолчанию повторяет поведение
-        прежнего скрипта.
+        небольшой выброс. По умолчанию ("model") берётся
+        `cell_model.potential_clip`: (0, 1.5) у безразмерной модели
+        Роджерса–МакКаллоха, без обрезки у моделей в мВ. Прежде значение
+        (0, 1.5) было зашито здесь и уничтожило бы потенциал в мВ.
     """
 
     def __init__(self, tissue: Tissue, cell_model: CellModel,
                  stimulus: StimulusProtocol, theta: float = 0.5,
-                 clip_after_diffusion: tuple[float, float] | None = (0.0, 1.5)):
+                 clip_after_diffusion="model"):
         if not 0.0 <= theta <= 1.0:
             raise ValueError(f"theta должна быть в [0, 1], получено {theta}")
 
@@ -91,6 +93,11 @@ class MonodomainSolver:
         self.cell = cell_model
         self.stimulus = stimulus
         self.theta = float(theta)
+        if isinstance(clip_after_diffusion, str):
+            if clip_after_diffusion != "model":
+                raise ValueError(f"clip_after_diffusion: пределы, None или 'model'; "
+                                 f"получено {clip_after_diffusion!r}")
+            clip_after_diffusion = cell_model.potential_clip
         self.clip_after_diffusion = clip_after_diffusion
 
         self.mesh = tissue.mesh
@@ -190,6 +197,24 @@ class MonodomainSolver:
     def _sync_function_to_potential(self) -> None:
         self.state[:, self.cell.v_index] = self.v_fn.x.array[:self.n_local]
 
+    # ── подготовка ────────────────────────────────────────────────────
+    def relax(self, duration_ms: float, dt: float) -> int:
+        """
+        Счёт БЕЗ стимула (с диффузией): ткань приходит к покою при своих
+        параметрах, включая пограничную зону, где здоровые узлы
+        электротонически подтянуты деполяризованной ишемической областью
+        (см. PreloadProtocol.cell_relax_ms). Время расчёта не сдвигается.
+        Возвращает число шагов.
+
+        Именно с диффузией: при подготовке изолированных клеток
+        пограничные узлы приходили бы к «чужому» покою, и после включения
+        связи их первый удар начинался бы с переходного процесса.
+        """
+        n = int(round(duration_ms / dt))
+        for _ in range(n):
+            self._split_step(0.0, dt, stimulate=False)
+        return n
+
     # ── шаг ───────────────────────────────────────────────────────────
     def step(self, t: float, dt: float) -> None:
         """
@@ -199,10 +224,15 @@ class MonodomainSolver:
         Стимул подаётся на обоих полушагах реакции со значением
         огибающей в соответствующий момент времени.
         """
+        self._split_step(t, dt, stimulate=True)
+
+    def _split_step(self, t: float, dt: float, stimulate: bool) -> None:
         self._setup_solver(dt)
+        zero = None if stimulate else np.zeros(self.n_local)
 
         self.state = self.cell.step(
-            t, self.state, dt / 2, self._stimulus_at(t), self.params)
+            t, self.state, dt / 2,
+            self._stimulus_at(t) if stimulate else zero, self.params)
         self._sync_potential_to_function()
 
         self._diffuse(dt)
@@ -210,7 +240,7 @@ class MonodomainSolver:
         self._sync_function_to_potential()
         self.state = self.cell.step(
             t + dt / 2, self.state, dt / 2,
-            self._stimulus_at(t + dt / 2), self.params)
+            self._stimulus_at(t + dt / 2) if stimulate else zero, self.params)
         self._sync_potential_to_function()
         self.v_fn.x.scatter_forward()
 

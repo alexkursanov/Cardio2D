@@ -7,9 +7,16 @@
 
     активация      — пересечение порога `activation_threshold` модели
                      клетки снизу вверх;
-    реполяризация  — спад до уровня V_rest + (1 − apd_level)·(V_peak − V_rest),
-                     где V_peak — максимум ЭТОГО удара в этом узле. При
-                     apd_level = 0.9 это APD90.
+    реполяризация  — спад до уровня V_base + (1 − apd_level)·(V_peak − V_base),
+                     где V_peak — максимум ЭТОГО удара в этом узле, а
+                     V_base — минимум потенциала в диастоле перед ним (в
+                     этом же узле). При apd_level = 0.9 это APD90.
+
+Базовый уровень берётся по узлу, а не из модели: в ишемической зоне
+покой деполяризован (при K_o = 9.4 мМ — около −71.6 мВ вместо −85.9), и
+уровень, отсчитанный от покоя модели, там не достигался бы никогда —
+APD в самой интересной области молча пропал бы. `v_rest` модели нужен
+только узлам, возбуждённым уже в момент старта.
 
 Моменты уточняются линейной интерполяцией между соседними шагами, так
 что точность — доли dt_эл, а не dt_мех, на котором работают остальные
@@ -64,6 +71,10 @@ class ThresholdDetector:
         n = len(v0)
         self.active = v0 >= self.threshold
         self.peak = np.where(self.active, v0, -np.inf)
+        # минимум в текущей диастоле и базовый уровень текущего удара
+        self.base = np.where(self.active, np.inf, v0)
+        self.beat_base = np.where(self.active, min(self.v_rest, float(v0.min(initial=self.v_rest))),
+                                  v0)
         self.count = self.active.astype(np.int64)
         # события: (узел, номер удара, время[, пик])
         self._act = [(np.flatnonzero(self.active),
@@ -81,6 +92,8 @@ class ThresholdDetector:
 
         # ── активация: снизу вверх через порог ────────────────────────
         up = ~self.active & (prev < th) & (v >= th)
+        rest = ~self.active & ~up
+        self.base[rest] = np.minimum(self.base[rest], v[rest])
         if up.any():
             idx = np.flatnonzero(up)
             frac = (th - prev[idx]) / (v[idx] - prev[idx])
@@ -88,11 +101,13 @@ class ThresholdDetector:
             self.count[idx] += 1
             self.active[idx] = True
             self.peak[idx] = v[idx]
+            self.beat_base[idx] = np.minimum(self.base[idx], prev[idx])
+            self.base[idx] = np.inf
 
         # ── пик и реполяризация у уже активных ────────────────────────
         act = self.active & ~up
         self.peak[act] = np.maximum(self.peak[act], v[act])
-        level = self.v_rest + (1.0 - self.apd_level) * (self.peak - self.v_rest)
+        level = self.beat_base + (1.0 - self.apd_level) * (self.peak - self.beat_base)
         down = act & (v < level)
         if down.any():
             idx = np.flatnonzero(down)
@@ -104,6 +119,7 @@ class ThresholdDetector:
                               self.peak[idx].copy()))
             self.active[idx] = False
             self.peak[idx] = -np.inf
+            self.base[idx] = v[idx]
 
         self._v = v.copy()
         self._t = float(t)

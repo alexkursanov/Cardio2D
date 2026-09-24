@@ -167,6 +167,11 @@ class SimulationConfig:
     # знает о реестрах: он лежит ниже слоя моделей).
     cell_model: str = "rogers_mcculloch"
     passive_material: str = "transversely_isotropic_exponential"
+    # Базовые (для всей ткани) значения параметров модели клетки, которые
+    # отличаются от значений модели по умолчанию. Имена — из
+    # `param_names` выбранной модели; проверяются при сборке Simulation.
+    # По регионам — ключами "cell:<имя>" в overrides региона.
+    cell_params: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for label, value in (("cell_model", self.cell_model),
@@ -174,6 +179,10 @@ class SimulationConfig:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} должен быть непустым именем модели, "
                                  f"получено {value!r}")
+        try:
+            self.cell_params = {str(k): float(v) for k, v in dict(self.cell_params).items()}
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"cell_params: значения должны быть числами ({exc})") from None
 
     # ── удобные конструкторы ──────────────────────────────────────────
     @staticmethod
@@ -281,6 +290,7 @@ class SimulationConfig:
             "restart": self.restart.to_dict(),
             "cell_model": self.cell_model,
             "passive_material": self.passive_material,
+            "cell_params": dict(self.cell_params),
         }
 
     @staticmethod
@@ -297,6 +307,7 @@ class SimulationConfig:
             cell_model=d.get("cell_model", "rogers_mcculloch"),
             passive_material=d.get("passive_material",
                                    "transversely_isotropic_exponential"),
+            cell_params=dict(d.get("cell_params", {})),
         )
 
     def to_json(self, path, skip_unserializable: bool = False) -> None:
@@ -316,8 +327,10 @@ class SimulationConfig:
         flat = self.tissue_base.to_flat_dict()
         lines = [
             self.mesh.summary(),
-            f"  Модели       : клетка {self.cell_model}, "
-            f"материал {self.passive_material}",
+            f"  Модели       : клетка {self.cell_model}"
+            + (f" ({', '.join(f'{k}={v:g}' for k, v in self.cell_params.items())})"
+               if self.cell_params else "")
+            + f", материал {self.passive_material}",
             f"  Шаги         : dt_эл = {self.time.dt_electric_ms} мс, "
             f"dt_мех = {self.time.dt_mech_ms:g} мс, "
             f"t_end = {self.time.t_end_ms} мс",
@@ -325,7 +338,9 @@ class SimulationConfig:
             f"A = {self.stimulus.amplitude}, "
             f"длит. {self.stimulus.duration_ms} мс",
             f"  Преднагрузка : λ_f = {self.preload.stretch} "
-            f"за {self.preload.n_steps} шагов",
+            f"за {self.preload.n_steps} шагов"
+            + (f", подготовка клеток {self.preload.cell_relax_ms:g} мс"
+               if self.preload.cell_relax_ms else ""),
             f"  Базовая ткань: T_max={flat['T_MAX']} кПа, "
             f"D={flat['D_LONG']}/{flat['D_TRANS']} мм²/мс, "
             f"волокна {flat['FIBER_ANGLE_DEG']}°",

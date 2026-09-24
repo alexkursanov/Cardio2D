@@ -203,6 +203,10 @@ class TissueBaseParams:
 #  ОБЛАСТИ
 # ═══════════════════════════════════════════════════════════════════════
 
+#: Префикс ключей переопределений, относящихся к модели клетки.
+CELL_PREFIX = "cell:"
+
+
 @dataclass(frozen=True)
 class RegionSpec:
     """
@@ -210,7 +214,10 @@ class RegionSpec:
     ей принадлежат (`contains`), и сериализоваться (`to_dict`).
 
     `overrides` — плоский словарь переопределений, ключи проверяются по
-    `TissueBaseParams.flat_keys()` при создании.
+    `TissueBaseParams.flat_keys()` при создании. Параметры модели клетки
+    задаются ключами `cell:<имя>` (например, `cell:ATP_i` для ишемии);
+    их имена зависят от модели и проверяются при сборке расчёта — слой
+    конфигурации моделей не знает.
 
     `name` — необязательная метка для логов и карт регионов.
     """
@@ -220,12 +227,23 @@ class RegionSpec:
 
     def __post_init__(self) -> None:
         allowed = set(TissueBaseParams.flat_keys())
-        unknown = set(self.overrides) - allowed
+        empty_cell = [k for k in self.overrides
+                      if k.startswith(CELL_PREFIX) and not k[len(CELL_PREFIX):].strip()]
+        if empty_cell:
+            raise ValueError(f"область {self.name or type(self).__name__}: "
+                             f"пустое имя параметра клетки в {empty_cell}")
+        unknown = {k for k in self.overrides if not k.startswith(CELL_PREFIX)} - allowed
         if unknown:
             raise ValueError(
                 f"область {self.name or type(self).__name__}: неизвестные "
                 f"ключи переопределений {sorted(unknown)}; допустимы "
-                f"{sorted(allowed)}")
+                f"{sorted(allowed)} и параметры клетки как 'cell:<имя>'")
+
+    @property
+    def cell_overrides(self) -> dict[str, float]:
+        """Переопределения параметров клетки: {имя без префикса: значение}."""
+        return {k[len(CELL_PREFIX):]: float(v) for k, v in self.overrides.items()
+                if k.startswith(CELL_PREFIX)}
 
     def contains(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         raise NotImplementedError

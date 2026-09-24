@@ -56,6 +56,7 @@ class RogersMcCullochModel(CellModel):
     # в норме u не подходит к этой границе, а при подходе означает, что
     # шаг великоват.
     state_bounds = {0: (0.0, 1.1)}
+    potential_clip = (0.0, 1.5)        # как в исходном скрипте
 
     def resting_state(self) -> np.ndarray:
         return np.array([0.0, 0.0])

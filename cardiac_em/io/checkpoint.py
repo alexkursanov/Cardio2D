@@ -77,7 +77,7 @@ VERSION = 1
 # стимуляции и шаги по времени в список не входят: менять их при
 # продолжении — обычное дело.
 _PHYSICS_SECTIONS = ("mesh", "tissue_base", "regions", "preload",
-                     "cell_model", "passive_material")
+                     "cell_model", "passive_material", "cell_params")
 
 
 @dataclass

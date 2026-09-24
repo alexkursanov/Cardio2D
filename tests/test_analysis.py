@@ -91,6 +91,23 @@ def test_apd90_is_exact_for_linear_decay():
     np.testing.assert_allclose(det50.maps()[1][:, 0], t_up + 1 + 100 + 0.5 * 20, atol=1e-9)
 
 
+def test_apd_uses_the_nodes_own_diastolic_level():
+    """
+    Ишемия: покой деполяризован (−0.3 вместо 0 в единицах сигнала).
+    Уровень APD90 отсчитывается от диастолы ЭТОГО узла, а не от покоя
+    модели — иначе реполяризация не была бы найдена вовсе.
+    """
+    base = -0.3
+
+    def sig(t):
+        return np.array([base + (1.0 - base) * _ap(t, 1.0), _ap(t, 1.0)])
+
+    det = _run_detector(sig, 200.0)          # v_rest модели = 0
+    act, rep, _ = det.maps()
+    level_frac = 0.9                          # доля спада с пика до базы
+    np.testing.assert_allclose(rep[:, 0], 1 + 1 + 100 + level_frac * 20, atol=1e-9)
+
+
 def test_two_beats_are_separated():
     def sig(t):
         return np.array([_ap(t, 1.0) + _ap(t, 301.0), _ap(t, 1.0)])

@@ -1,0 +1,102 @@
+{
+  "mesh": {
+    "electric": {
+      "kind": "rectangle",
+      "nx": 60,
+      "ny": 60,
+      "lx_mm": 6.0,
+      "ly_mm": 6.0,
+      "cell_type": "quadrilateral"
+    },
+    "mechanical": {
+      "kind": "rectangle",
+      "nx": 15,
+      "ny": 15,
+      "lx_mm": 6.0,
+      "ly_mm": 6.0,
+      "cell_type": "quadrilateral"
+    }
+  },
+  "tissue_base": {
+    "reaction": {
+      "c1": 0.26,
+      "c2": 0.1,
+      "a": 0.13,
+      "b": 0.013,
+      "d": 1.0
+    },
+    "conduction": {
+      "d_long": 0.15,
+      "d_trans": 0.05,
+      "fiber_angle_deg": 0.0
+    },
+    "active": {
+      "t_max": 60.0
+    },
+    "passive": {
+      "mu": 1.0,
+      "b_iso": 1.0,
+      "mu_f": 3.0,
+      "b_f": 2.0,
+      "kappa": 100.0
+    }
+  },
+  "regions": [
+    {
+      "shape": "circle",
+      "name": "ишемия 15 мин",
+      "params": {
+        "cx": 4.0,
+        "cy": 3.0,
+        "r": 1.5
+      },
+      "overrides": {
+        "cell:K_o": 9.4,
+        "cell:ATP_i": 4.0,
+        "cell:KmATP": 0.38
+      }
+    }
+  ],
+  "stimulus": {
+    "times_ms": [
+      1.0
+    ],
+    "duration_ms": 2.0,
+    "amplitude": 100.0,
+    "rise_time_ms": 0.1,
+    "decay_length_mm": 0.5,
+    "x_max_mm": 1.0
+  },
+  "time": {
+    "dt_electric_ms": 0.05,
+    "n_electric_per_mech": 20,
+    "t_end_ms": 400.0
+  },
+  "preload": {
+    "stretch": 1.2575,
+    "n_steps": 10,
+    "cell_relax_ms": 300.0
+  },
+  "output": {
+    "out_dir": "runs/tnnpm_ischemia",
+    "save_every_mech_steps": 5,
+    "snapshot_times_ms": [
+      20.0,
+      150.0,
+      300.0
+    ],
+    "ckpt_every_mech_steps": 100,
+    "ckpt_keep_all": false,
+    "write_region_maps": true,
+    "record_activation": true,
+    "apd_level": 0.9
+  },
+  "restart": {
+    "checkpoint_path": null,
+    "reset_time": false,
+    "allow_interp": false
+  },
+  "cell_model": "tnnpm",
+  "passive_material": "transversely_isotropic_exponential",
+  "cell_params": {}
+}

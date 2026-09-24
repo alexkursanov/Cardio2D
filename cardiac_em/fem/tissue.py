@@ -90,7 +90,8 @@ class Tissue:
     def __init__(self, mesh, base: TissueBaseParams,
                  regions: tuple[RegionSpec, ...] = (),
                  keys: tuple[str, ...] | None = None,
-                 name: str = ""):
+                 name: str = "",
+                 cell_params: dict[str, float] | None = None):
         self.mesh = mesh
         self.base = base
         self.regions = tuple(regions)
@@ -134,6 +135,35 @@ class Tissue:
                 self._dg0_arrays[key] = arr
                 self._dg0_functions[key] = self._as_function(key, arr)
 
+        # ── параметры модели клетки (на P1) ───────────────────────────
+        # Базовые значения — от модели (с поправками config.cell_params),
+        # по регионам — ключи "cell:<имя>". Строятся только если заданы
+        # (электрическая сетка); механической они не нужны, и там ключи
+        # "cell:…" регионов просто не читаются.
+        self.cell_keys: tuple[str, ...] = ()
+        if cell_params is not None:
+            clash = set(cell_params) & set(flat_base)
+            if clash:
+                raise ValueError(f"имена параметров клетки {sorted(clash)} совпадают "
+                                 f"с параметрами ткани — переименуйте их в модели")
+            requested_cell = set()
+            for region in self.regions:
+                requested_cell |= set(region.cell_overrides)
+            unknown_cell = requested_cell - set(cell_params)
+            if unknown_cell:
+                raise ValueError(
+                    f"регионы задают неизвестные параметры клетки "
+                    f"{sorted('cell:' + k for k in unknown_cell)}; у модели есть: "
+                    f"{sorted(cell_params) or 'ни одного (параметры по регионам не поддерживаются)'}")
+            for key, value in cell_params.items():
+                arr = np.full(len(p1_xy), float(value), dtype=np.float64)
+                for i, region in enumerate(self.regions):
+                    if key in region.cell_overrides:
+                        arr[self.region_id_p1 == i] = region.cell_overrides[key]
+                self._p1_arrays[key] = arr
+            self.cell_keys = tuple(cell_params)
+            self.keys = self.keys + self.cell_keys
+
         # ── карта регионов для визуализации ───────────────────────────
         # 0 = базовая ткань, i+1 = regions[i]; так «нет региона» отличимо
         # от «регион номер ноль» при просмотре в ParaView.
@@ -143,10 +173,16 @@ class Tissue:
     # ── конструкторы под конкретную задачу ────────────────────────────
     @classmethod
     def for_electrics(cls, mesh, base: TissueBaseParams,
-                      regions: tuple[RegionSpec, ...] = ()) -> "Tissue":
-        """Параметры, нужные монодоменной задаче, на электрической сетке."""
+                      regions: tuple[RegionSpec, ...] = (),
+                      cell_params: dict[str, float] | None = None) -> "Tissue":
+        """
+        Параметры, нужные монодоменной задаче, на электрической сетке.
+        `cell_params` — базовые значения параметров модели клетки
+        (`model.default_params()` с поправками конфигурации).
+        """
         return cls(mesh, base, regions,
-                   keys=TissueBaseParams.ELECTRIC_KEYS, name="электрическая")
+                   keys=TissueBaseParams.ELECTRIC_KEYS, name="электрическая",
+                   cell_params=cell_params)
 
     @classmethod
     def for_mechanics(cls, mesh, base: TissueBaseParams,
