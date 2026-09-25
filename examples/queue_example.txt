@@ -1,0 +1,24 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  Пример файла очереди для scripts/queue.py
+#
+#  По заданию в строке; всё после # — комментарий. Пути — от корня проекта.
+#    * серия       — путь к JSON серии (ключи base, out_root, parameters)
+#    * один прогон — путь к конфигурации + флаги как у `cardiac_em run`
+#                    (--out, --t-end, --set путь=значение, --restart …)
+#  Задания идут сверху вниз; готовые (status = finished) пропускаются.
+#  Строки можно дописывать, пока очередь работает.
+#
+#  Запуск:
+#    nohup python scripts/queue.py examples/queue_example.txt --np 8 --parallel 3 \
+#        > runs/queue.log 2>&1 &
+#  Остановить после текущих заданий:  touch examples/queue_example.txt.stop
+# ═══════════════════════════════════════════════════════════════════════
+
+# 1. Серия: три стадии ишемии, 10 ударов с частотой 1 Гц
+examples/sweep_tnnpm_1hz.json
+
+# 2. Одиночный прогон: тот же пример, но 3 с и своя папка
+examples/tnnpm_ischemia.json --out runs/isch_3s --t-end 3000 --set stimulus.times_ms=[1,1001,2001]
+
+# 3. Продолжение прогона 2 ещё на 2 с (t_end — абсолютное время!)
+# examples/tnnpm_ischemia.json --out runs/isch_5s --restart runs/isch_3s/ckpt_last.npz --t-end 5000 --set stimulus.times_ms=[3001,4001]
