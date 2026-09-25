@@ -201,7 +201,7 @@ class _Style:
             "axes.edgecolor": self.muted, "axes.labelcolor": self.ink,
             "axes.titlecolor": self.ink, "axes.titlesize": 11, "axes.titleweight": "medium",
             "axes.spines.top": False, "axes.spines.right": False,
-            "axes.grid": True, "grid.color": self.grid, "grid.linewidth": 0.6,
+            "axes.grid": True, "axes.axisbelow": True, "grid.color": self.grid, "grid.linewidth": 0.6,
             "xtick.color": self.muted, "ytick.color": self.muted,
             "xtick.labelcolor": self.ink, "ytick.labelcolor": self.ink,
             "lines.linewidth": 2.0, "lines.markersize": 8,
